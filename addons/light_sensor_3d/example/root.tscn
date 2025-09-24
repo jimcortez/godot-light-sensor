@@ -1,7 +1,7 @@
 [gd_scene load_steps=7 format=3 uid="uid://bu3k5wgm6tyuq"]
 
-[ext_resource type="Script" path="res://addons/light_sensor_3d/example/sensor_label.gd" id="2_ljxqy"]
-[ext_resource type="Script" path="res://addons/light_sensor_3d/light_sensor_3d.gd" id="3_3whfq"]
+[ext_resource type="Script" uid="uid://cnboghkhgtxei" path="res://addons/light_sensor_3d/example/sensor_label.gd" id="2_ljxqy"]
+[ext_resource type="Script" uid="uid://bym34v8y85jgk" path="res://addons/light_sensor_3d/light_sensor_3d.gd" id="3_3whfq"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_5l7yt"]
 sky_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
