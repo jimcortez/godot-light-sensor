@@ -7,6 +7,8 @@ var gizmo_plugin = GizmoPlugin.new()
 
 func _enter_tree():
 	add_node_3d_gizmo_plugin(gizmo_plugin)
+	print_debug("LightSensor3D Plugin: Gizmo plugin added. Autoload is configured in project.godot")
 
 func _exit_tree():
 	remove_node_3d_gizmo_plugin(gizmo_plugin)
+	print_debug("LightSensor3D Plugin: Gizmo plugin removed")

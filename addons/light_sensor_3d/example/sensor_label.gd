@@ -9,11 +9,11 @@ func _ready():
 
 	if log_color_change_event:
 		light_probe.color_updated.connect(
-			func (new_color: Color): print(get_parent().name, ": color updated to ", new_color))
+			func (new_color: Color): pass)  # Logging removed
 	
 	if log_light_level_change_event:
 		light_probe.light_level_updated.connect(
-			func (new_lum: float): print(get_parent().name, ": luminance updated to ", new_lum))
+			func (new_lum: float): pass)  # Logging removed
 
 func _process(_delta):
 	text = "%.2f" % light_probe.light_level

@@ -48,6 +48,8 @@ editor_description = "This light probe can track the color and luminance at its 
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.45, 0)
 script = ExtResource("3_3whfq")
 layer = 2
+use_compute_mode = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="NoLight/LightProbe3D"]
 autostart = true
@@ -76,6 +78,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.45, 0)
 script = ExtResource("3_3whfq")
 layer = 2
 print_timing_information = null
+use_compute_mode = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="LittleLight/LightProbe3D"]
 autostart = true
@@ -102,7 +106,8 @@ editor_description = "This light probe can track the color and luminance at its 
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.45, 0)
 script = ExtResource("3_3whfq")
 layer = 2
-print_timing_information = null
+print_timing_information = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="SomeLight/LightProbe3D"]
 autostart = true
@@ -131,7 +136,7 @@ editor_description = "This light probe can track the color and luminance at its 
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.45, 0)
 script = ExtResource("3_3whfq")
 layer = 2
-print_timing_information = null
+print_timing_information = true
 
 [node name="Timer" type="Timer" parent="BrightLight/LightProbe3D"]
 autostart = true
@@ -159,6 +164,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.45, 0)
 script = ExtResource("3_3whfq")
 layer = 2
 print_timing_information = null
+use_compute_mode = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="FullLight/LightProbe3D"]
 autostart = true
@@ -186,6 +193,8 @@ script = ExtResource("3_3whfq")
 layer = 2
 enable_subviewport_debug = true
 print_timing_information = null
+use_compute_mode = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="TestLight1/LightProbe3D"]
 autostart = true
@@ -207,6 +216,8 @@ script = ExtResource("3_3whfq")
 layer = 2
 enable_subviewport_debug = true
 print_timing_information = null
+use_compute_mode = true
+sample_resolution = 8
 
 [node name="Timer" type="Timer" parent="TestLight2/LightProbe3D"]
 autostart = true

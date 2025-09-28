@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://va55xyh6j4g2"
+path="res://.godot/imported/light_sensor.glsl-83e58c4c7a9e4eaefdd42a9d0532d400.res"
+
+[deps]
+
+source_file="res://addons/light_sensor_3d/compute/light_sensor.glsl"
+dest_files=["res://.godot/imported/light_sensor.glsl-83e58c4c7a9e4eaefdd42a9d0532d400.res"]
+
+[params]
+
