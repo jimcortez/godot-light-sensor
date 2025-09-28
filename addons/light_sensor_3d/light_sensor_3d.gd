@@ -3,11 +3,17 @@
 class_name LightSensor3D extends Node3D
 
 ## Emitted when the color the sensor observes has changed (after refresh()).
+## Only emitted when the color actually changes.
 signal color_updated(color: Color)
 
 ## Emitted when the light level the sensor observes has changed (after refresh()).
+## Only emitted when the light level actually changes.
 ## Ranges from 0 (pitch dark) to 1 (bright as the sun).
 signal light_level_updated(luminance: float)
+
+## Emitted whenever the sensor values are refreshed, regardless of whether they changed.
+## Useful for benchmarking and monitoring refresh cycles.
+signal values_refreshed(color: Color, luminance: float)
 
 ## Configure a layer for the sensor probe.
 ## Choose a layer visible to your lights but invisible to your camera.
@@ -74,17 +80,6 @@ func _ready():
 	camera.cull_mask = layer
 	sensor_mesh.layers = layer
 	
-	# Optional: size the subviewport based on sample_resolution if reasonable
-	if sample_resolution == 1:
-		_sub_viewport.size = Vector2i(1, 1)
-	elif sample_resolution == 4:
-		_sub_viewport.size = Vector2i(4, 4)
-	elif sample_resolution == 8:
-		_sub_viewport.size = Vector2i(8, 8)
-
-	# Disable continuous updates; we flip to UPDATE_ONCE during refresh()
-	_sub_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	
 	var debug_sprite := _scene.get_node("DebugViewportSprite") as Sprite3D
 	debug_sprite.visible = enable_subviewport_debug
 	
@@ -102,17 +97,16 @@ func _ready():
 					_manager = node
 					break
 	
-	if _manager != null and _manager.has_method("register_sensor"):
+	# Only register with compute manager if GPU compute mode is enabled
+	if use_compute_mode and _manager != null and _manager.has_method("register_sensor"):
 		_sensor_id = _manager.call("register_sensor", self)
 		if _manager.has_signal("sensor_result_ready"):
 			_manager.connect("sensor_result_ready", Callable(self, "_on_sensor_result_ready"))
 		
 		# Check if GPU compute is available when use_compute_mode is enabled
-		if use_compute_mode:
-			_check_gpu_availability_strict()
-	else:
-		if use_compute_mode:
-			push_warning("LightSensor3D: GPU compute mode enabled but LightSensorComputeManager not found. Check autoload configuration in Project Settings > AutoLoad.")
+		_check_gpu_availability_strict()
+	elif use_compute_mode:
+		push_warning("LightSensor3D: GPU compute mode enabled but LightSensorComputeManager not found. Check autoload configuration in Project Settings > AutoLoad.")
 	
 	if print_timing_information:
 		print_debug(get_path(), ": This LightSensor3D is configured to print out timing information.")
@@ -145,8 +139,54 @@ func refresh() -> void:
 		call_deferred("_enqueue_compute")
 		return
 	
-	# CPU fallback removed - GPU compute is required when use_compute_mode is enabled
-	push_error("LightSensor3D: CPU fallback removed. GPU compute is required when use_compute_mode is enabled.")
+	# CPU fallback implementation
+	_sub_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	call_deferred("_cpu_refresh")
+
+func _cpu_refresh() -> void:
+	# Wait one frame to ensure the SubViewport has rendered after UPDATE_ONCE
+	await get_tree().process_frame
+	var t_start = Time.get_ticks_usec()
+	var texture := _sub_viewport.get_texture()
+	var image := texture.get_image() # this one's a doozy
+	
+	# Next, we want to get every pixel and average their colors.
+	# Presumably calling get_data() once is faster than get_pixel() many times.
+	var color_data := image.get_data()
+	var color_data_size := color_data.size()
+	assert(color_data_size % 3 == 0, "Expected 3 channels per pixel")
+
+	# Sum all the values for each channel separately.
+	var average_color_array := [0, 0, 0]
+	for i in color_data.size():
+		average_color_array[i % 3] += color_data.decode_u8(i)
+	
+	# Finally, convert the sums of rgb values into the average color.
+	var pixel_count := color_data.size() / 3.0
+	var average_color := Color(
+		average_color_array[0] / pixel_count / 255,
+		average_color_array[1] / pixel_count / 255,
+		average_color_array[2] / pixel_count / 255,
+	)
+	
+	var t_end := Time.get_ticks_usec()
+	if print_timing_information:
+		print(get_path(), " (a LightSensor3D) took %.2fms to refresh" % ((t_end - t_start) / 1000.0))
+	
+	# Store previous values to check for changes
+	var previous_color = color
+	var previous_light_level = light_level
+	
+	# Trigger updates if the color changed
+	if not color.is_equal_approx(average_color):
+		color = average_color
+		color_updated.emit(color)
+		light_level_updated.emit(light_level)
+		
+		# Always emit refresh signal for benchmarking
+		values_refreshed.emit(color, light_level)
+
+
 
 func _enqueue_compute() -> void:
 	if _manager == null or _sensor_id < 0:
@@ -160,10 +200,24 @@ func _enqueue_compute() -> void:
 func _on_sensor_result_ready(id: int, result_color: Color) -> void:
 	if id != _sensor_id:
 		return
-	if not color.is_equal_approx(result_color):
-		color = result_color
+	
+	# Store previous values to check for changes
+	var previous_color = color
+	var previous_light_level = light_level
+	
+	# Update cached values
+	color = result_color
+	var new_light_level = light_level  # This will use the getter
+	
+	# Emit change signals only if values actually changed
+	if not color.is_equal_approx(previous_color):
 		color_updated.emit(color)
-		light_level_updated.emit(light_level)
+	
+	if not is_equal_approx(new_light_level, previous_light_level):
+		light_level_updated.emit(new_light_level)
+	
+	# Always emit refresh signal for benchmarking
+	values_refreshed.emit(color, new_light_level)
 
 func _check_gpu_availability_strict() -> void:
 	if _manager == null:

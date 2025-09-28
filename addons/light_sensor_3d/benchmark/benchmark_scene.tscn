@@ -1,0 +1,136 @@
+[gd_scene load_steps=9 format=3 uid="uid://b8x7lam2n4p5q"]
+
+[ext_resource type="Script" uid="uid://c8pm5kffc7s33" path="res://addons/light_sensor_3d/benchmark/benchmark_controller.gd" id="1_controller"]
+[ext_resource type="Script" uid="uid://c0ybalyirdy0x" path="res://addons/light_sensor_3d/benchmark/color_cycling_light.gd" id="2_cycling_light"]
+[ext_resource type="Script" uid="uid://bmjp342n5rbah" path="res://addons/light_sensor_3d/benchmark/sensor_grid.gd" id="3_sensor_grid"]
+[ext_resource type="Script" uid="uid://1w8n00ibr8jo" path="res://addons/light_sensor_3d/benchmark/benchmark_results.gd" id="4_results"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
+sky_horizon_color = Color(0.2, 0.2, 0.2, 1)
+ground_horizon_color = Color(0.1, 0.1, 0.1, 1)
+
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("ProceduralSkyMaterial_1")
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+ambient_light_source = 1
+ambient_light_color = Color(0.1, 0.1, 0.1, 1)
+ambient_light_energy = 0.1
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(1, 1, 1, 1)
+metallic = 0.0
+roughness = 0.5
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_1"]
+size = Vector2(40, 40)
+material = SubResource("StandardMaterial3D_floor")
+
+[node name="BenchmarkScene" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 16, 16)
+fov = 60.0
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+mesh = SubResource("PlaneMesh_1")
+layers = 2
+
+[node name="ColorCyclingLight" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
+script = ExtResource("2_cycling_light")
+
+[node name="SpotLight3D" type="SpotLight3D" parent="ColorCyclingLight"]
+transform = Transform3D(1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0)
+light_energy = 1.0
+shadow_enabled = true
+spot_range = 40.0
+spot_angle = 60.0
+layers = 3
+
+[node name="SensorGrid" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+script = ExtResource("3_sensor_grid")
+
+[node name="BenchmarkController" type="Node" parent="."]
+script = ExtResource("1_controller")
+
+[node name="BenchmarkResults" type="Control" parent="BenchmarkController"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("4_results")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="BenchmarkController/BenchmarkResults"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = -20.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Title" type="Label" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 44
+text = "Light Sensor 3D Benchmark"
+
+[node name="StatusLabel" type="Label" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Status: Ready"
+
+[node name="FPSLabel" type="Label" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "FPS: 0"
+
+[node name="ProgressBar" type="ProgressBar" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+
+[node name="ResultsText" type="RichTextLabel" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/normal_font_size = 36
+bbcode_enabled = true
+text = "Results will appear here..."
+
+[node name="ControlButtons" type="HBoxContainer" parent="BenchmarkController/BenchmarkResults/VBoxContainer"]
+layout_mode = 2
+
+[node name="StartCPUTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Start CPU Test"
+
+[node name="StartGPUTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Start GPU Test"
+
+[node name="StartBatchTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Start Batch Test"
+
+[node name="ResetTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Reset"
+
+[connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartCPUTest" to="BenchmarkController" method="start_cpu_test"]
+[connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartGPUTest" to="BenchmarkController" method="start_gpu_test"]
+[connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartBatchTest" to="BenchmarkController" method="start_batch_test"]
+[connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/ResetTest" to="BenchmarkController" method="reset_test"]
