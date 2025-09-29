@@ -12,6 +12,10 @@ signal sensor_result_ready(id: int, color: Color)
 var _rd: RenderingDevice
 var _shader_rid: RID
 var _pipeline_rid: RID
+var _shared_sampler_rid: RID = RID()
+var _frame_fence_rid: RID = RID()
+var _last_submit_frame: int = -1
+var _inflight_submit: bool = false
 
 # Per-sensor state
 class SensorState:
@@ -27,6 +31,10 @@ class SensorState:
 	var results_read: bool = false
 	var last_result: Color = Color.BLACK
 	var texture_size: Vector2i = Vector2i(4, 4)  # Store actual texture size
+	var rd_texture_rid: RID = RID()
+	var texture_set_rid: RID = RID()
+	var buffer_set_rid: RID = RID()
+	var last_buffer_index: int = -1
 
 var _next_id: int = 1
 var _sensors: Dictionary = {} # id -> SensorState
@@ -43,8 +51,7 @@ func _ready() -> void:
 		# print_debug("LightSensorComputeManager: GPU compute disabled by configuration.")
 		return
 		
-	# Use local RenderingDevice for compute operations
-	# We'll handle texture compatibility separately
+	# Use a local RenderingDevice (only local devices can submit/dispatch from scripts)
 	_rd = RenderingServer.create_local_rendering_device()
 	if _rd == null:
 		push_error("LightSensorComputeManager: Failed to create RenderingDevice for GPU compute. System will crash when GPU compute is requested.")
@@ -81,7 +88,25 @@ func _setup_compute_resources() -> void:
 		push_error("LightSensorComputeManager: Failed to create compute pipeline. System will crash when GPU compute is requested.")
 		return
 	
+	# Create and cache a shared sampler reused across all sensors
+	var sampler_state := RDSamplerState.new()
+	samper_state_use_defaults(sampler_state)
+	_shared_sampler_rid = _rd.sampler_create(sampler_state)
+	if _shared_sampler_rid == RID():
+		push_error("LightSensorComputeManager: Failed to create shared sampler.")
+		return
+
 	# print("LightSensorComputeManager: GPU compute resources created successfully.")
+
+func samper_state_use_defaults(sampler_state: RDSamplerState) -> void:
+	# Defaults are fine for now; tweak later (e.g., enable mipmap filtering when using mip sampling)
+	# Keep linear filtering and clamp to edge to minimize sampling artifacts
+	sampler_state.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	sampler_state.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	sampler_state.mip_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	sampler_state.repeat_u = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	sampler_state.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	sampler_state.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
 
 func _exit_tree():
 	# Clean up all resources when the compute manager is destroyed
@@ -102,6 +127,14 @@ func _cleanup_all_resources():
 		if _shader_rid != RID():
 			_rd.free_rid(_shader_rid)
 			_shader_rid = RID()
+
+		if _shared_sampler_rid != RID():
+			_rd.free_rid(_shared_sampler_rid)
+			_shared_sampler_rid = RID()
+
+		if _frame_fence_rid != RID():
+			_rd.free_rid(_frame_fence_rid)
+			_frame_fence_rid = RID()
 		
 		# RenderingDevice cleanup is handled automatically by Godot
 		_rd = null
@@ -138,17 +171,19 @@ func unregister_sensor(id: int) -> void:
 	
 	# Only attempt to free RIDs if RenderingDevice is still valid
 	if _rd != null:
-		# Clean up resources
-		for buffer in state.output_buffers:
-			if buffer != RID():
-				_rd.free_rid(buffer)
-		
-		# Note: uniform_sets are freed in _create_sensor_uniform_sets, so we don't need to free them here
-		# The uniform sets are recreated for each refresh and freed immediately after use
-		
-		# Clean up sampler
-		if state.sampler_rid != RID():
-			_rd.free_rid(state.sampler_rid)
+		# Ensure no in-flight work before freeing resources
+		if _inflight_submit:
+			_rd.sync()
+			_inflight_submit = false
+
+		# Avoid explicit frees to prevent invalid ID errors during teardown; rely on device cleanup.
+		# Just invalidate local references.
+		for i in state.output_buffers.size():
+			state.output_buffers[i] = RID()
+		state.uniform_sets.clear()
+		state.texture_set_rid = RID()
+		state.buffer_set_rid = RID()
+		state.rd_texture_rid = RID()
 	
 	# Remove from collections regardless of RenderingDevice state
 	_sensors.erase(id)
@@ -190,122 +225,134 @@ func _process(_delta: float) -> void:
 		return
 	
 	_frame_count += 1
+
+	# Ensure the previous local-device submit finished before starting a new one
+	if _inflight_submit and _last_submit_frame >= 0 and _frame_count > _last_submit_frame:
+		_rd.sync()
+		_inflight_submit = false
 	_process_compute_queue()
 	_poll_completed_results()
 
 func _process_compute_queue() -> void:
-	# Process all pending sensors without frame limit for maximum throughput
+	# Batch all pending sensors, prepare textures/uniforms before beginning compute list
+	if _pending_queue.size() == 0:
+		return
+
+	var to_dispatch: Array[int] = []
 	while _pending_queue.size() > 0:
 		var sensor_id := _pending_queue.pop_front()
 		if not _sensors.has(sensor_id):
 			continue
-		
 		var state: SensorState = _sensors[sensor_id]
 		if not state.pending:
 			continue
-		
-		_dispatch_compute(sensor_id, state)
+		# Ensure texture is created/updated BEFORE starting compute list
+		_ensure_sensor_texture(state)
+		if state.rd_texture_rid == RID():
+			continue
+		# Ensure uniform sets exist for this sensor (no compute list active yet)
+		_create_sensor_uniform_sets(state)
+		if state.uniform_sets.size() < 2:
+			continue
+		to_dispatch.append(sensor_id)
 
-func _dispatch_compute(sensor_id: int, state: SensorState) -> void:
-	# Create uniform sets for this sensor (including texture creation/update)
-	_create_sensor_uniform_sets(state)
-	
-	# Create compute list
+	if to_dispatch.size() == 0:
+		return
+
 	var compute_list := _rd.compute_list_begin()
 	_rd.compute_list_bind_compute_pipeline(compute_list, _pipeline_rid)
-	
-	# Bind uniform sets
-	if state.uniform_sets.size() >= 2:
+
+	for sensor_id in to_dispatch:
+		var state: SensorState = _sensors[sensor_id]
+		# Bind sensor-specific uniform sets
 		_rd.compute_list_bind_uniform_set(compute_list, state.uniform_sets[0], 0)
 		_rd.compute_list_bind_uniform_set(compute_list, state.uniform_sets[1], 1)
-	
-	# Push constants (texture size) - use actual texture size from sensor state
-	var texture_size := state.texture_size
-	var push_constant_data := PackedByteArray()
-	push_constant_data.resize(16) # 2 * int32 with 16-byte alignment
-	push_constant_data.encode_s32(0, texture_size.x)
-	push_constant_data.encode_s32(4, texture_size.y)
-	# print("LightSensorComputeManager: Setting push constants with texture size " + str(texture_size))
-	# Padding bytes 8-15 are automatically zero-filled
-	_rd.compute_list_set_push_constant(compute_list, push_constant_data, 16)
-	
-	# Dispatch compute shader (1 workgroup for 8x8 texture)
-	# print("LightSensorComputeManager: Dispatching compute shader for sensor " + str(sensor_id) + " with texture size " + str(texture_size))
-	_rd.compute_list_dispatch(compute_list, 1, 1, 1)
+		# Push constants (texture size)
+		var texture_size := state.texture_size
+		var push_constant_data := PackedByteArray()
+		push_constant_data.resize(16)
+		push_constant_data.encode_s32(0, texture_size.x)
+		push_constant_data.encode_s32(4, texture_size.y)
+		_rd.compute_list_set_push_constant(compute_list, push_constant_data, 16)
+		# Dispatch compute work
+		_rd.compute_list_dispatch(compute_list, 1, 1, 1)
+
 	_rd.compute_list_end()
-	
-	# Submit compute list and mark as completed
 	_rd.submit()
-	_rd.sync()
-	# print("LightSensorComputeManager: Compute shader completed for sensor " + str(sensor_id))
-	# Mark as completed (no fence needed with sync)
-	state.pending = false
-	state.results_read = false
+	_inflight_submit = true
+
+	# Defer readback to the next frame without fences
+	_last_submit_frame = _frame_count
+	for sid in to_dispatch:
+		if _sensors.has(sid):
+			var st: SensorState = _sensors[sid]
+			st.pending = false
+			st.results_read = false
+
+func _dispatch_compute(sensor_id: int, state: SensorState) -> void:
+	# Deprecated by batched path; kept for compatibility if ever used
+	# Use the batched submit path in _process_compute_queue instead
+	pass
 
 func _create_sensor_uniform_sets(state: SensorState) -> void:
-	# Clean up old uniform sets
-	if _rd != null:
-		for uniform_set in state.uniform_sets:
-			if uniform_set != RID():
-				_rd.free_rid(uniform_set)
-	
-	state.uniform_sets.clear()
-	
-	# Create texture uniform set (set 0)
+	# Ensure per-sensor texture exists and is updated; create texture uniform set once
 	if state.viewport_tex_rid == RID():
 		push_error("LightSensorComputeManager: Invalid viewport texture RID for sensor " + str(state.id))
 		return
 	
-	# Create RenderingDevice texture from SubViewport texture using native handle
-	# This avoids CPU copy by sharing the native texture handle
-	var rd_texture_rid := _create_rd_texture_from_subviewport(state.viewport_tex_rid, state.id)
-	if rd_texture_rid == RID():
-		push_error("LightSensorComputeManager: Failed to create RenderingDevice texture for sensor " + str(state.id))
+	# Ensure RD texture exists and matches size; update pixels from viewport image
+	_ensure_sensor_texture(state)
+	if state.rd_texture_rid == RID():
+		push_error("LightSensorComputeManager: Sensor RD texture not available for sensor " + str(state.id))
 		return
 	
 	
-	# Create a sampler for the texture
-	var sampler_state := RDSamplerState.new()
-	state.sampler_rid = _rd.sampler_create(sampler_state)
-	if state.sampler_rid == RID():
-		push_error("LightSensorComputeManager: Failed to create sampler for sensor " + str(state.id))
+	# Use shared sampler
+	if _shared_sampler_rid == RID():
+		push_error("LightSensorComputeManager: Shared sampler not initialized.")
 		return
 	
-	var texture_uniform := RDUniform.new()
-	texture_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	texture_uniform.binding = 0
-	texture_uniform.add_id(state.sampler_rid)  # First ID: sampler
-	texture_uniform.add_id(rd_texture_rid)  # Second ID: texture
+	# Create texture set only once or if missing
+	if state.texture_set_rid == RID():
+		var texture_uniform := RDUniform.new()
+		texture_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+		texture_uniform.binding = 0
+		texture_uniform.add_id(_shared_sampler_rid)
+		texture_uniform.add_id(state.rd_texture_rid)
+		var texture_set := _rd.uniform_set_create([texture_uniform], _shader_rid, 0)
+		if texture_set == RID():
+			push_error("LightSensorComputeManager: Failed to create texture uniform set for sensor " + str(state.id))
+			return
+		state.texture_set_rid = texture_set
 	
-	
-	var texture_uniforms := [texture_uniform]
-	var texture_set := _rd.uniform_set_create(texture_uniforms, _shader_rid, 0)
-	if texture_set == RID():
-		push_error("LightSensorComputeManager: Failed to create texture uniform set for sensor " + str(state.id))
-		return
-	
-	state.uniform_sets.append(texture_set)
-	
-	# Create storage buffer uniform set (set 1)
+	# Ensure storage buffer uniform set (set 1) matches current buffer index
 	if state.output_buffers.size() <= state.buffer_index or state.output_buffers[state.buffer_index] == RID():
 		push_error("LightSensorComputeManager: Invalid output buffer RID for sensor " + str(state.id))
 		return
-	
-	var buffer_uniform := RDUniform.new()
-	buffer_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
-	buffer_uniform.binding = 0
-	buffer_uniform.add_id(state.output_buffers[state.buffer_index])
-	
-	var buffer_uniforms := [buffer_uniform]
-	var buffer_set := _rd.uniform_set_create(buffer_uniforms, _shader_rid, 1)
-	if buffer_set == RID():
-		push_error("LightSensorComputeManager: Failed to create storage buffer uniform set for sensor " + str(state.id))
-		return
-	
-	state.uniform_sets.append(buffer_set)
+
+	if state.buffer_set_rid == RID() or state.last_buffer_index != state.buffer_index:
+		# Free previous buffer set if exists
+		if state.buffer_set_rid != RID():
+			_rd.free_rid(state.buffer_set_rid)
+		# Create new buffer uniform set for current buffer index
+		var buffer_uniform := RDUniform.new()
+		buffer_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
+		buffer_uniform.binding = 0
+		buffer_uniform.add_id(state.output_buffers[state.buffer_index])
+		var buffer_set := _rd.uniform_set_create([buffer_uniform], _shader_rid, 1)
+		if buffer_set == RID():
+			push_error("LightSensorComputeManager: Failed to create storage buffer uniform set for sensor " + str(state.id))
+			return
+		state.buffer_set_rid = buffer_set
+		state.last_buffer_index = state.buffer_index
+
+	# Refresh the per-sensor uniform_sets array in the expected order
+	state.uniform_sets.clear()
+	state.uniform_sets.append(state.texture_set_rid)
+	state.uniform_sets.append(state.buffer_set_rid)
 
 func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) -> RID:
-	"""Create a RenderingDevice texture from SubViewport texture using shared texture approach"""
+	"""Create a RenderingDevice texture from SubViewport texture and upload pixels (CPU path)."""
 	if viewport_tex_rid == RID():
 		push_error("LightSensorComputeManager: Invalid viewport texture RID for sensor " + str(sensor_id))
 		return RID()
@@ -326,7 +373,7 @@ func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) 
 	if _sensors.has(sensor_id):
 		_sensors[sensor_id].texture_size = texture_size
 	
-	# Create a new texture in the local RenderingDevice
+	# Create a new texture in the RenderingDevice
 	var texture_format := RDTextureFormat.new()
 	texture_format.width = texture_size.x
 	texture_format.height = texture_size.y
@@ -339,8 +386,8 @@ func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) 
 		push_error("LightSensorComputeManager: Failed to create RD texture for sensor " + str(sensor_id))
 		return RID()
 	
-	# Copy texture data from SubViewport to local RenderingDevice texture
-	# This is the only CPU copy we need to do, but it's necessary for compatibility
+	# Copy texture data from SubViewport to RenderingDevice texture
+	# NOTE: This path performs a CPU round-trip; will be replaced with direct binding when possible
 	if viewport_texture != null:
 		# Ensure the image is in the correct format for the texture
 		viewport_texture.convert(Image.FORMAT_RGBA8)
@@ -379,6 +426,45 @@ func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) 
 	
 	return rd_texture
 
+func _ensure_sensor_texture(state: SensorState) -> void:
+	# Ensure RD texture exists and matches the viewport texture size; upload latest pixels
+	if state.viewport_tex_rid == RID():
+		return
+
+	var viewport_image: Image = RenderingServer.texture_2d_get(state.viewport_tex_rid)
+	if viewport_image == null:
+		return
+
+	var size := viewport_image.get_size()
+	if size.x <= 0 or size.y <= 0:
+		return
+
+	var need_create := state.rd_texture_rid == RID() or state.texture_size != size
+	if need_create:
+		# Free previous
+		if state.rd_texture_rid != RID():
+			_rd.free_rid(state.rd_texture_rid)
+		state.texture_size = size
+		var tf := RDTextureFormat.new()
+		tf.width = size.x
+		tf.height = size.y
+		tf.format = RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM
+		tf.mipmaps = true
+		tf.usage_bits = RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
+		var tv := RDTextureView.new()
+		state.rd_texture_rid = _rd.texture_create(tf, tv)
+		# Update texture uniform set to point at new texture
+		if state.texture_set_rid != RID():
+			_rd.free_rid(state.texture_set_rid)
+			state.texture_set_rid = RID()
+
+	# Upload pixels
+	viewport_image.convert(Image.FORMAT_RGBA8)
+	var bytes := viewport_image.get_data()
+	var expected := size.x * size.y * 4
+	if bytes.size() == expected and state.rd_texture_rid != RID():
+		_rd.texture_update(state.rd_texture_rid, 0, bytes)
+
 func _poll_completed_results() -> void:
 	if _rd == null:
 		push_error("LightSensorComputeManager: Cannot poll results - RenderingDevice is null. GPU compute is required.")
@@ -386,9 +472,8 @@ func _poll_completed_results() -> void:
 	
 	for sensor_id in _sensors.keys():
 		var state: SensorState = _sensors[sensor_id]
-		# With sync approach, results are immediately available when not pending
-		# Check if we have a completed result that hasn't been read yet
-		if not state.pending and not state.results_read:
+		# Readback one frame after the last submit to avoid stalls
+		if not state.pending and not state.results_read and _last_submit_frame >= 0 and _frame_count > _last_submit_frame:
 			_read_sensor_result(sensor_id, state)
 			state.results_read = true
 

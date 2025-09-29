@@ -443,112 +443,32 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		print("✓ Engine FPS goal met! Average: " + str(round(avg_engine_fps * 100) / 100) + " >= " + str(engine_fps_goal))
 		print("✓ Outgoing FPS target achieved! Average: " + str(round(avg_outgoing_fps * 100) / 100) + " FPS (target: " + str(current_outgoing_fps_target) + " FPS)")
 		
-		# Check if we can try a higher refresh rate
-		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		
-		# For CPU mode: continue testing higher rates if performance is good, even beyond original goal
-		# For GPU mode: respect the outgoing_fps_goal limit
-		var should_continue_testing = false
-		if current_adaptive_mode == "CPU":
-			# CPU mode: continue testing higher rates as long as engine FPS goal is met
-			should_continue_testing = next_target <= (outgoing_fps_goal + outgoing_fps_step * 2) and not tested_fps_rates.has(next_target)
-		else:
-			# GPU mode: respect the original goal
-			should_continue_testing = next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target)
-		
-		if should_continue_testing:
-			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
-			current_outgoing_fps_target = next_target
-			current_pass = 0
-			update_status("Adaptive test - trying higher refresh rate: " + str(current_outgoing_fps_target) + " FPS")
-			
-			# Reset testing state and continue with new target
-			is_testing = false
-			current_test_type = ""
-			
-			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
-			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
-			return
-		elif next_target > outgoing_fps_goal and current_adaptive_mode == "CPU":
-			# CPU mode reached reasonable limit - switch to GPU phase
-			print("CPU mode reached reasonable outgoing FPS limit (" + str(outgoing_fps_goal + outgoing_fps_step * 2) + " FPS). Switching to GPU phase.")
+		# Goal achieved - if we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+		# Otherwise, complete the test
+		if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+			print("CPU phase goal achieved - switching to GPU phase")
 			await switch_to_gpu_phase()
 			return
-		elif next_target > outgoing_fps_goal and current_adaptive_mode == "GPU":
-			# GPU mode reached maximum - complete the test
-			print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+		else:
+			print("Goal achieved - completing adaptive test.")
 			await complete_adaptive_test()
 			return
-		else:
-			# Already tested this rate
-			print("Already tested " + str(next_target) + " FPS.")
-			
-			# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
-			if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
-				print("Switching to GPU phase to continue testing...")
-				await switch_to_gpu_phase()
-				return
-			else:
-				# Otherwise, complete the test
-				print("Completing adaptive test.")
-				await complete_adaptive_test()
-				return
 	
 	# Check different scenarios
 	if avg_engine_fps >= engine_fps_goal:
 		print("✓ Engine FPS goal met! Average: " + str(round(avg_engine_fps * 100) / 100) + " >= " + str(engine_fps_goal))
 		print("⚠ Outgoing FPS target not achieved! Average: " + str(round(avg_outgoing_fps * 100) / 100) + " FPS (target: " + str(current_outgoing_fps_target) + " FPS)")
 		
-		# Engine FPS is good but outgoing FPS is low - try a higher refresh rate
-		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		
-		# For CPU mode: continue testing higher rates if performance is good, even beyond original goal
-		# For GPU mode: respect the outgoing_fps_goal limit
-		var should_continue_testing = false
-		if current_adaptive_mode == "CPU":
-			# CPU mode: continue testing higher rates as long as engine FPS goal is met
-			should_continue_testing = next_target <= (outgoing_fps_goal + outgoing_fps_step * 2) and not tested_fps_rates.has(next_target)
-		else:
-			# GPU mode: respect the original goal
-			should_continue_testing = next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target)
-		
-		if should_continue_testing:
-			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
-			current_outgoing_fps_target = next_target
-			current_pass = 0
-			update_status("Adaptive test - trying higher refresh rate: " + str(current_outgoing_fps_target) + " FPS")
-			
-			# Reset testing state and continue with new target
-			is_testing = false
-			current_test_type = ""
-			
-			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
-			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
-			return
-		elif next_target > outgoing_fps_goal and current_adaptive_mode == "CPU":
-			# CPU mode reached reasonable limit - switch to GPU phase
-			print("CPU mode reached reasonable outgoing FPS limit (" + str(outgoing_fps_goal + outgoing_fps_step * 2) + " FPS). Switching to GPU phase.")
+		# Engine FPS is good but outgoing FPS is low - if we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+		# Otherwise, complete the test
+		if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+			print("CPU phase goal achieved (engine FPS) but outgoing FPS low - switching to GPU phase")
 			await switch_to_gpu_phase()
 			return
-		elif next_target > outgoing_fps_goal and current_adaptive_mode == "GPU":
-			# GPU mode reached maximum - complete the test
-			print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+		else:
+			print("Engine FPS goal achieved - completing adaptive test.")
 			await complete_adaptive_test()
 			return
-		else:
-			# Already tested this rate
-			print("Already tested " + str(next_target) + " FPS.")
-			
-			# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
-			if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
-				print("Switching to GPU phase to continue testing...")
-				await switch_to_gpu_phase()
-				return
-			else:
-				# Otherwise, complete the test
-				print("Completing adaptive test.")
-				await complete_adaptive_test()
-				return
 	else:
 		print("⚠ Engine FPS goal not met. Average: " + str(round(avg_engine_fps * 100) / 100) + " < " + str(engine_fps_goal))
 		
@@ -833,21 +753,27 @@ func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engi
 	var gpu_max_fps = 0.0
 	var gpu_max_engine_fps = 0.0
 	
-	# For CPU mode - find highest FPS that meets engine goal
+	# For CPU mode - find highest FPS that meets engine goal AND achieves outgoing FPS target
 	for result in cpu_results:
 		var metadata = result.get("adaptive_test_metadata", {})
 		var fps_target = metadata.get("outgoing_fps_target", 0)
 		var engine_fps_result = result.get("avg_fps", 0)
-		if engine_fps_result >= engine_fps_goal and fps_target > cpu_max_fps:
+		var outgoing_fps_result = result.get("avg_outgoing_fps", 0)
+		# Check if both engine FPS goal is met AND outgoing FPS target is achieved (with 70% tolerance)
+		var outgoing_fps_achieved = outgoing_fps_result >= (fps_target * 0.7)
+		if engine_fps_result >= engine_fps_goal and outgoing_fps_achieved and fps_target > cpu_max_fps:
 			cpu_max_fps = fps_target
 			cpu_max_engine_fps = engine_fps_result
 	
-	# For GPU mode - find highest FPS that meets engine goal
+	# For GPU mode - find highest FPS that meets engine goal AND achieves outgoing FPS target
 	for result in gpu_results:
 		var metadata = result.get("adaptive_test_metadata", {})
 		var fps_target = metadata.get("outgoing_fps_target", 0)
 		var engine_fps_result = result.get("avg_fps", 0)
-		if engine_fps_result >= engine_fps_goal and fps_target > gpu_max_fps:
+		var outgoing_fps_result = result.get("avg_outgoing_fps", 0)
+		# Check if both engine FPS goal is met AND outgoing FPS target is achieved (with 70% tolerance)
+		var outgoing_fps_achieved = outgoing_fps_result >= (fps_target * 0.7)
+		if engine_fps_result >= engine_fps_goal and outgoing_fps_achieved and fps_target > gpu_max_fps:
 			gpu_max_fps = fps_target
 			gpu_max_engine_fps = engine_fps_result
 	
@@ -857,15 +783,17 @@ func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engi
 	var gpu_best_compromise_fps = 0.0
 	var gpu_best_compromise_engine_fps = 0.0
 	
-	if cpu_max_fps == 0:  # No CPU result met engine goal
-		# Find the best compromise: prioritize refresh rates that get close to engine goal
+	if cpu_max_fps == 0:  # No CPU result met both engine goal and outgoing FPS target
+		# Find the best compromise: prioritize refresh rates that get close to engine goal AND achieve good outgoing FPS
 		for result in cpu_results:
 			var metadata = result.get("adaptive_test_metadata", {})
 			var fps_target = metadata.get("outgoing_fps_target", 0)
 			var engine_fps_result = result.get("avg_fps", 0)
+			var outgoing_fps_result = result.get("avg_outgoing_fps", 0)
 			
-			# Prefer refresh rates that achieve at least 80% of engine goal
-			if engine_fps_result >= engine_fps_goal * 0.8:
+			# Prefer refresh rates that achieve at least 80% of engine goal AND at least 50% of outgoing FPS target
+			var outgoing_fps_achieved = outgoing_fps_result >= (fps_target * 0.5)
+			if engine_fps_result >= engine_fps_goal * 0.8 and outgoing_fps_achieved:
 				if cpu_best_compromise_fps == 0 or fps_target > cpu_best_compromise_fps:
 					cpu_best_compromise_fps = fps_target
 					cpu_best_compromise_engine_fps = engine_fps_result
@@ -880,15 +808,17 @@ func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engi
 					cpu_best_compromise_fps = fps_target
 					cpu_best_compromise_engine_fps = engine_fps_result
 	
-	if gpu_max_fps == 0:  # No GPU result met engine goal
-		# Find the best compromise: prioritize refresh rates that get close to engine goal
+	if gpu_max_fps == 0:  # No GPU result met both engine goal and outgoing FPS target
+		# Find the best compromise: prioritize refresh rates that get close to engine goal AND achieve good outgoing FPS
 		for result in gpu_results:
 			var metadata = result.get("adaptive_test_metadata", {})
 			var fps_target = metadata.get("outgoing_fps_target", 0)
 			var engine_fps_result = result.get("avg_fps", 0)
+			var outgoing_fps_result = result.get("avg_outgoing_fps", 0)
 			
-			# Prefer refresh rates that achieve at least 80% of engine goal
-			if engine_fps_result >= engine_fps_goal * 0.8:
+			# Prefer refresh rates that achieve at least 80% of engine goal AND at least 50% of outgoing FPS target
+			var outgoing_fps_achieved = outgoing_fps_result >= (fps_target * 0.5)
+			if engine_fps_result >= engine_fps_goal * 0.8 and outgoing_fps_achieved:
 				if gpu_best_compromise_fps == 0 or fps_target > gpu_best_compromise_fps:
 					gpu_best_compromise_fps = fps_target
 					gpu_best_compromise_engine_fps = engine_fps_result
