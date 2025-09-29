@@ -9,14 +9,14 @@ signal test_progress(progress: float, status: String)
 
 # Test configuration
 @export var test_duration: float = 5.0
-@export var grid_size: int = 20
+@export var grid_size: int = 5
 @export var color_cycle_speed: float = 1.0
 @export var target_fps_threshold: float = 55.0
 
 # Adaptive testing configuration
 @export var engine_fps_goal: float = 40.0  # Minimum acceptable engine FPS
 @export var engine_fps_max: float = 55.0   # Maximum expected engine FPS
-@export var outgoing_fps_goal: float = 20.0  # Target outgoing FPS to start with
+@export var outgoing_fps_goal: float = 40.0  # Target outgoing FPS to start with
 @export var outgoing_fps_min: float = 10.0   # Minimum outgoing FPS
 @export var outgoing_fps_step: float = 10.0   # Step size for decreasing outgoing FPS
 @export var test_passes_per_rate: int = 1    # Number of test passes per refresh rate
@@ -37,6 +37,11 @@ var adaptive_test_results: Array[Dictionary] = []
 var adaptive_test_recommendations: Dictionary = {}
 var current_adaptive_mode: String = ""  # "CPU" or "GPU"
 var adaptive_test_phases_completed: int = 0  # Track completed phases (CPU=1, GPU=2)
+
+# Convergence tracking to prevent infinite loops
+var tested_fps_rates: Array[float] = []  # Track all FPS rates we've tested
+var convergence_attempts: int = 0  # Track how many times we've oscillated
+var max_convergence_attempts: int = 3  # Maximum oscillation attempts before stopping
 
 # FPS monitoring
 var fps_samples: Array[float] = []
@@ -399,11 +404,28 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 	# All passes completed for this refresh rate
 	print("All passes completed for outgoing FPS target: " + str(current_outgoing_fps_target))
 	
+	# Track this FPS rate as tested
+	tested_fps_rates.append(current_outgoing_fps_target)
+	
 	# Calculate average results for this refresh rate
 	var avg_results = calculate_average_results_for_rate(current_outgoing_fps_target)
 	var avg_engine_fps = avg_results.get("avg_fps", 0)
 	
 	print("Average engine FPS for " + str(current_outgoing_fps_target) + " FPS: " + str(round(avg_engine_fps * 100) / 100))
+	
+	# Check for convergence issues (oscillation between same FPS rates)
+	if tested_fps_rates.size() >= 4:
+		var last_four = tested_fps_rates.slice(-4)
+		# Check if we're oscillating between two values (e.g., [20, 30, 20, 30])
+		if last_four[0] == last_four[2] and last_four[1] == last_four[3] and last_four[0] != last_four[1]:
+			convergence_attempts += 1
+			print("⚠ Convergence issue detected! Oscillating between " + str(last_four[0]) + " and " + str(last_four[1]) + " FPS (attempt " + str(convergence_attempts) + "/" + str(max_convergence_attempts) + ")")
+			
+			if convergence_attempts >= max_convergence_attempts:
+				print("🛑 Maximum convergence attempts reached. Stopping adaptive test to prevent infinite loop.")
+				print("Final recommendation will be based on the best performing rate tested so far.")
+				await complete_adaptive_test()
+				return
 	
 	# Check if we met the engine FPS goal AND achieved the target outgoing FPS
 	var avg_outgoing_fps = avg_results.get("avg_outgoing_fps", 0)
@@ -415,7 +437,7 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		
 		# Check if we can try a higher refresh rate
 		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		if next_target <= outgoing_fps_goal:
+		if next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target):
 			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
 			current_outgoing_fps_target = next_target
 			current_pass = 0
@@ -428,7 +450,7 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
 			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
 			return
-		else:
+		elif next_target > outgoing_fps_goal:
 			# We've reached the maximum target for this mode - check if we need to switch to GPU
 			if current_adaptive_mode == "CPU":
 				print("CPU phase completed - switching to GPU phase")
@@ -439,6 +461,11 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
 				await complete_adaptive_test()
 				return
+		else:
+			# Already tested this rate, complete the test
+			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
+			await complete_adaptive_test()
+			return
 	
 	# Check different scenarios
 	if avg_engine_fps >= engine_fps_goal:
@@ -447,7 +474,7 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		
 		# Engine FPS is good but outgoing FPS is low - try a higher refresh rate
 		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		if next_target <= outgoing_fps_goal:
+		if next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target):
 			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
 			current_outgoing_fps_target = next_target
 			current_pass = 0
@@ -460,7 +487,7 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
 			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
 			return
-		else:
+		elif next_target > outgoing_fps_goal:
 			# We've reached the maximum target for this mode - check if we need to switch to GPU
 			if current_adaptive_mode == "CPU":
 				print("CPU phase completed - switching to GPU phase")
@@ -471,15 +498,20 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
 				await complete_adaptive_test()
 				return
+		else:
+			# Already tested this rate, complete the test
+			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
+			await complete_adaptive_test()
+			return
 	else:
 		print("⚠ Engine FPS goal not met. Average: " + str(round(avg_engine_fps * 100) / 100) + " < " + str(engine_fps_goal))
 		
 		# Decrease outgoing FPS target and continue
-		current_outgoing_fps_target -= outgoing_fps_step
+		var next_target = current_outgoing_fps_target - outgoing_fps_step
 		current_pass = 0
 		
 		# Check if we've reached the minimum outgoing FPS
-		if current_outgoing_fps_target < outgoing_fps_min:
+		if next_target < outgoing_fps_min:
 			# Current mode completed - check if we need to switch to GPU
 			if current_adaptive_mode == "CPU":
 				print("CPU phase completed - switching to GPU phase")
@@ -490,6 +522,13 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 				await complete_adaptive_test()
 				return
 		
+		# Check if we've already tested this lower rate
+		if tested_fps_rates.has(next_target):
+			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
+			await complete_adaptive_test()
+			return
+		
+		current_outgoing_fps_target = next_target
 		print("Decreasing outgoing FPS target to: " + str(current_outgoing_fps_target))
 		update_status("Adaptive test - trying lower refresh rate: " + str(current_outgoing_fps_target) + " FPS")
 		
@@ -512,6 +551,10 @@ func switch_to_gpu_phase():
 	# Reset for GPU phase - start at the original goal, not where CPU left off
 	current_outgoing_fps_target = outgoing_fps_goal
 	current_pass = 0
+	
+	# Reset convergence tracking for GPU phase
+	tested_fps_rates.clear()
+	convergence_attempts = 0
 	
 	# Ensure any lingering test is properly stopped
 	is_testing = false
@@ -1241,6 +1284,10 @@ func reset_test():
 	test_results.clear()
 	adaptive_test_results.clear()
 	adaptive_test_recommendations.clear()
+	
+	# Reset convergence tracking
+	tested_fps_rates.clear()
+	convergence_attempts = 0
 	
 	# Reset UI
 	update_status("Ready")
