@@ -437,7 +437,18 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		
 		# Check if we can try a higher refresh rate
 		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		if next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target):
+		
+		# For CPU mode: continue testing higher rates if performance is good, even beyond original goal
+		# For GPU mode: respect the outgoing_fps_goal limit
+		var should_continue_testing = false
+		if current_adaptive_mode == "CPU":
+			# CPU mode: continue testing higher rates as long as engine FPS goal is met
+			should_continue_testing = next_target <= (outgoing_fps_goal + outgoing_fps_step * 2) and not tested_fps_rates.has(next_target)
+		else:
+			# GPU mode: respect the original goal
+			should_continue_testing = next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target)
+		
+		if should_continue_testing:
 			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
 			current_outgoing_fps_target = next_target
 			current_pass = 0
@@ -450,17 +461,16 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
 			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
 			return
-		elif next_target > outgoing_fps_goal:
-			# We've reached the maximum target for this mode - check if we need to switch to GPU
-			if current_adaptive_mode == "CPU":
-				print("CPU phase completed - switching to GPU phase")
-				await switch_to_gpu_phase()
-				return
-			else:
-				# Both phases completed - complete the test
-				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
-				await complete_adaptive_test()
-				return
+		elif next_target > outgoing_fps_goal and current_adaptive_mode == "CPU":
+			# CPU mode reached reasonable limit - switch to GPU phase
+			print("CPU mode reached reasonable outgoing FPS limit (" + str(outgoing_fps_goal + outgoing_fps_step * 2) + " FPS). Switching to GPU phase.")
+			await switch_to_gpu_phase()
+			return
+		elif next_target > outgoing_fps_goal and current_adaptive_mode == "GPU":
+			# GPU mode reached maximum - complete the test
+			print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+			await complete_adaptive_test()
+			return
 		else:
 			# Already tested this rate, complete the test
 			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
@@ -474,7 +484,18 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		
 		# Engine FPS is good but outgoing FPS is low - try a higher refresh rate
 		var next_target = current_outgoing_fps_target + outgoing_fps_step
-		if next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target):
+		
+		# For CPU mode: continue testing higher rates if performance is good, even beyond original goal
+		# For GPU mode: respect the outgoing_fps_goal limit
+		var should_continue_testing = false
+		if current_adaptive_mode == "CPU":
+			# CPU mode: continue testing higher rates as long as engine FPS goal is met
+			should_continue_testing = next_target <= (outgoing_fps_goal + outgoing_fps_step * 2) and not tested_fps_rates.has(next_target)
+		else:
+			# GPU mode: respect the original goal
+			should_continue_testing = next_target <= outgoing_fps_goal and not tested_fps_rates.has(next_target)
+		
+		if should_continue_testing:
 			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
 			current_outgoing_fps_target = next_target
 			current_pass = 0
@@ -487,17 +508,16 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
 			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
 			return
-		elif next_target > outgoing_fps_goal:
-			# We've reached the maximum target for this mode - check if we need to switch to GPU
-			if current_adaptive_mode == "CPU":
-				print("CPU phase completed - switching to GPU phase")
-				await switch_to_gpu_phase()
-				return
-			else:
-				# Both phases completed - complete the test
-				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
-				await complete_adaptive_test()
-				return
+		elif next_target > outgoing_fps_goal and current_adaptive_mode == "CPU":
+			# CPU mode reached reasonable limit - switch to GPU phase
+			print("CPU mode reached reasonable outgoing FPS limit (" + str(outgoing_fps_goal + outgoing_fps_step * 2) + " FPS). Switching to GPU phase.")
+			await switch_to_gpu_phase()
+			return
+		elif next_target > outgoing_fps_goal and current_adaptive_mode == "GPU":
+			# GPU mode reached maximum - complete the test
+			print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+			await complete_adaptive_test()
+			return
 		else:
 			# Already tested this rate, complete the test
 			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
