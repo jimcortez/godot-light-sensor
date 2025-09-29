@@ -9,7 +9,7 @@ signal test_progress(progress: float, status: String)
 
 # Test configuration
 @export var test_duration: float = 5.0
-@export var grid_size: int = 5
+@export var grid_size: int = 6
 @export var color_cycle_speed: float = 1.0
 @export var target_fps_threshold: float = 55.0
 
@@ -424,8 +424,16 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			if convergence_attempts >= max_convergence_attempts:
 				print("🛑 Maximum convergence attempts reached. Stopping adaptive test to prevent infinite loop.")
 				print("Final recommendation will be based on the best performing rate tested so far.")
-				await complete_adaptive_test()
-				return
+				
+				# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+				if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+					print("Switching to GPU phase to continue testing...")
+					await switch_to_gpu_phase()
+					return
+				else:
+					# Otherwise, complete the test
+					await complete_adaptive_test()
+					return
 	
 	# Check if we met the engine FPS goal AND achieved the target outgoing FPS
 	var avg_outgoing_fps = avg_results.get("avg_outgoing_fps", 0)
@@ -472,10 +480,19 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await complete_adaptive_test()
 			return
 		else:
-			# Already tested this rate, complete the test
-			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
-			await complete_adaptive_test()
-			return
+			# Already tested this rate
+			print("Already tested " + str(next_target) + " FPS.")
+			
+			# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+			if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+				print("Switching to GPU phase to continue testing...")
+				await switch_to_gpu_phase()
+				return
+			else:
+				# Otherwise, complete the test
+				print("Completing adaptive test.")
+				await complete_adaptive_test()
+				return
 	
 	# Check different scenarios
 	if avg_engine_fps >= engine_fps_goal:
@@ -519,10 +536,19 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 			await complete_adaptive_test()
 			return
 		else:
-			# Already tested this rate, complete the test
-			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
-			await complete_adaptive_test()
-			return
+			# Already tested this rate
+			print("Already tested " + str(next_target) + " FPS.")
+			
+			# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+			if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+				print("Switching to GPU phase to continue testing...")
+				await switch_to_gpu_phase()
+				return
+			else:
+				# Otherwise, complete the test
+				print("Completing adaptive test.")
+				await complete_adaptive_test()
+				return
 	else:
 		print("⚠ Engine FPS goal not met. Average: " + str(round(avg_engine_fps * 100) / 100) + " < " + str(engine_fps_goal))
 		
@@ -544,9 +570,18 @@ func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: 
 		
 		# Check if we've already tested this lower rate
 		if tested_fps_rates.has(next_target):
-			print("Already tested " + str(next_target) + " FPS. Completing adaptive test.")
-			await complete_adaptive_test()
-			return
+			print("Already tested " + str(next_target) + " FPS.")
+			
+			# If we're in CPU mode and haven't tried GPU yet, switch to GPU phase
+			if current_adaptive_mode == "CPU" and adaptive_test_phases_completed == 0:
+				print("Switching to GPU phase to continue testing...")
+				await switch_to_gpu_phase()
+				return
+			else:
+				# Otherwise, complete the test
+				print("Completing adaptive test.")
+				await complete_adaptive_test()
+				return
 		
 		current_outgoing_fps_target = next_target
 		print("Decreasing outgoing FPS target to: " + str(current_outgoing_fps_target))
