@@ -798,15 +798,27 @@ func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engi
 					cpu_best_compromise_fps = fps_target
 					cpu_best_compromise_engine_fps = engine_fps_result
 		
-		# If no good compromise found, use the result with highest engine FPS
+		# If no good compromise found, prioritize results that meet engine FPS goal
 		if cpu_best_compromise_fps == 0:
+			# First, try to find any result that meets engine FPS goal
 			for result in cpu_results:
 				var metadata = result.get("adaptive_test_metadata", {})
 				var fps_target = metadata.get("outgoing_fps_target", 0)
 				var engine_fps_result = result.get("avg_fps", 0)
-				if engine_fps_result > cpu_best_compromise_engine_fps:
-					cpu_best_compromise_fps = fps_target
-					cpu_best_compromise_engine_fps = engine_fps_result
+				if engine_fps_result >= engine_fps_goal:
+					if cpu_best_compromise_fps == 0 or fps_target > cpu_best_compromise_fps:
+						cpu_best_compromise_fps = fps_target
+						cpu_best_compromise_engine_fps = engine_fps_result
+			
+			# If still no result found, use the result with highest engine FPS
+			if cpu_best_compromise_fps == 0:
+				for result in cpu_results:
+					var metadata = result.get("adaptive_test_metadata", {})
+					var fps_target = metadata.get("outgoing_fps_target", 0)
+					var engine_fps_result = result.get("avg_fps", 0)
+					if engine_fps_result > cpu_best_compromise_engine_fps:
+						cpu_best_compromise_fps = fps_target
+						cpu_best_compromise_engine_fps = engine_fps_result
 	
 	if gpu_max_fps == 0:  # No GPU result met both engine goal and outgoing FPS target
 		# Find the best compromise: prioritize refresh rates that get close to engine goal AND achieve good outgoing FPS
@@ -823,15 +835,27 @@ func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engi
 					gpu_best_compromise_fps = fps_target
 					gpu_best_compromise_engine_fps = engine_fps_result
 		
-		# If no good compromise found, use the result with highest engine FPS
+		# If no good compromise found, prioritize results that meet engine FPS goal
 		if gpu_best_compromise_fps == 0:
+			# First, try to find any result that meets engine FPS goal
 			for result in gpu_results:
 				var metadata = result.get("adaptive_test_metadata", {})
 				var fps_target = metadata.get("outgoing_fps_target", 0)
 				var engine_fps_result = result.get("avg_fps", 0)
-				if engine_fps_result > gpu_best_compromise_engine_fps:
-					gpu_best_compromise_fps = fps_target
-					gpu_best_compromise_engine_fps = engine_fps_result
+				if engine_fps_result >= engine_fps_goal:
+					if gpu_best_compromise_fps == 0 or fps_target > gpu_best_compromise_fps:
+						gpu_best_compromise_fps = fps_target
+						gpu_best_compromise_engine_fps = engine_fps_result
+			
+			# If still no result found, use the result with highest engine FPS
+			if gpu_best_compromise_fps == 0:
+				for result in gpu_results:
+					var metadata = result.get("adaptive_test_metadata", {})
+					var fps_target = metadata.get("outgoing_fps_target", 0)
+					var engine_fps_result = result.get("avg_fps", 0)
+					if engine_fps_result > gpu_best_compromise_engine_fps:
+						gpu_best_compromise_fps = fps_target
+						gpu_best_compromise_engine_fps = engine_fps_result
 	
 	text += "MAXIMUM SENSOR REFRESH RATE RECOMMENDATIONS:\n"
 	text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
