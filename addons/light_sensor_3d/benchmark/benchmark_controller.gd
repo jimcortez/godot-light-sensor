@@ -177,6 +177,13 @@ func start_adaptive_test_phase(test_type: String):
 	# Ensure we're in the right mode
 	current_adaptive_mode = test_type
 	
+	# Completely recreate the sensor grid for this test pass
+	# This ensures clean state between passes and proper mode configuration
+	if test_type == "CPU":
+		await configure_sensors_for_cpu()
+	elif test_type == "GPU":
+		await configure_sensors_for_gpu()
+	
 	# Set the refresh rate for the sensor grid
 	if sensor_grid and sensor_grid.has_method("set_refresh_rate"):
 		var refresh_interval = 1.0 / current_outgoing_fps_target
@@ -214,15 +221,17 @@ func start_test(test_type: String):
 	detected_colors.clear()
 	has_detected_non_black = false
 	
-	# Configure sensors based on test type
-	if test_type == "CPU":
-		await configure_sensors_for_cpu()
-	elif test_type == "GPU":
-		await configure_sensors_for_gpu()
-	elif test_type == "BATCH":
-		# For batch test, start with CPU
-		await configure_sensors_for_cpu()
-		current_test_type = "CPU"  # Will switch to GPU after CPU completes
+	# Configure sensors based on test type (only for non-adaptive tests)
+	# Adaptive tests handle sensor configuration in start_adaptive_test_phase
+	if not is_adaptive_test:
+		if test_type == "CPU":
+			await configure_sensors_for_cpu()
+		elif test_type == "GPU":
+			await configure_sensors_for_gpu()
+		elif test_type == "BATCH":
+			# For batch test, start with CPU
+			await configure_sensors_for_cpu()
+			current_test_type = "CPU"  # Will switch to GPU after CPU completes
 	
 	# Start the test
 	update_status("Running " + current_test_type + " test...")
