@@ -122,6 +122,11 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 36
 text = "Start Batch Test"
 
+[node name="StartAdaptiveTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Start Adaptive Test"
+
 [node name="ResetTest" type="Button" parent="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 36
@@ -130,4 +135,5 @@ text = "Reset"
 [connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartCPUTest" to="BenchmarkController" method="start_cpu_test"]
 [connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartGPUTest" to="BenchmarkController" method="start_gpu_test"]
 [connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartBatchTest" to="BenchmarkController" method="start_batch_test"]
+[connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/StartAdaptiveTest" to="BenchmarkController" method="start_adaptive_test"]
 [connection signal="pressed" from="BenchmarkController/BenchmarkResults/VBoxContainer/ControlButtons/ResetTest" to="BenchmarkController" method="reset_test"]

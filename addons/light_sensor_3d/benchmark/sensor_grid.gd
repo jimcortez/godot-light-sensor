@@ -6,7 +6,7 @@ extends Node3D
 signal refresh_completed(refresh_time: float)
 signal refresh_cycle_started()
 
-@export var grid_size: int = 2
+@export var grid_size: int = 2  # Default to 2x2, will be overridden by benchmark controller
 @export var sensor_spacing: float = 0.2
 @export var sensor_height: float = 0.1
 
@@ -22,6 +22,7 @@ var refresh_timeout_timer: Timer
 
 # Configuration
 var use_gpu_mode: bool = false
+var current_refresh_interval: float = 0.1  # Default 10 Hz (0.1s interval)
 
 func _ready():
 	create_sensor_grid()
@@ -88,7 +89,7 @@ func create_sensor_at_position(position: Vector3, grid_x: int, grid_z: int):
 func setup_refresh_timer():
 	refresh_timer = Timer.new()
 	refresh_timer.name = "RefreshTimer"
-	refresh_timer.wait_time = 0.1  # 10 Hz refresh rate
+	refresh_timer.wait_time = current_refresh_interval
 	refresh_timer.timeout.connect(_on_refresh_timer_timeout)
 	add_child(refresh_timer)
 	
@@ -107,6 +108,29 @@ func configure_sensors(use_gpu: bool):
 	# This ensures clean initialization without dynamic mode switching issues
 	# print("Recreating sensor grid for " + ("GPU" if use_gpu_mode else "CPU") + " mode")
 	await create_sensor_grid()
+
+func set_refresh_rate(interval: float):
+	"""Set the refresh rate for the sensor grid
+	@param interval: Time interval in seconds between refresh cycles
+	"""
+	current_refresh_interval = interval
+	
+	if refresh_timer:
+		refresh_timer.wait_time = current_refresh_interval
+		print("Sensor grid refresh rate set to: " + str(current_refresh_interval) + "s (" + str(1.0 / current_refresh_interval) + " FPS)")
+	
+	return current_refresh_interval
+
+func set_grid_size(new_size: int):
+	"""Set the grid size and recreate the sensor grid
+	
+	Args:
+		new_size: New grid size (will create new_size x new_size grid)
+	"""
+	if new_size != grid_size:
+		grid_size = new_size
+		print("Recreating sensor grid with size: " + str(grid_size) + "x" + str(grid_size))
+		await create_sensor_grid()
 
 func start_refresh_cycle():
 	if refresh_timer:

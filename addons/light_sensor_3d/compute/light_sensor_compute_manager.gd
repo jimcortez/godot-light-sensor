@@ -6,7 +6,6 @@ extends Node
 signal sensor_result_ready(id: int, color: Color)
 
 # Configuration
-@export var max_dispatches_per_frame: int = 4
 @export var use_gpu_compute: bool = true
 
 # RenderingDevice and compute resources
@@ -38,7 +37,7 @@ func _ready() -> void:
 	# Add to group for easier discovery
 	add_to_group("light_sensor_compute_manager")
 	
-	# print_debug("LightSensorComputeManager: Initializing... (use_gpu_compute: " + str(use_gpu_compute) + ")")
+	# print("LightSensorComputeManager: Initializing... (use_gpu_compute: " + str(use_gpu_compute) + ")")
 	
 	if not use_gpu_compute:
 		# print_debug("LightSensorComputeManager: GPU compute disabled by configuration.")
@@ -82,7 +81,30 @@ func _setup_compute_resources() -> void:
 		push_error("LightSensorComputeManager: Failed to create compute pipeline. System will crash when GPU compute is requested.")
 		return
 	
-	# print_debug("LightSensorComputeManager: GPU compute resources created successfully.")
+	# print("LightSensorComputeManager: GPU compute resources created successfully.")
+
+func _exit_tree():
+	# Clean up all resources when the compute manager is destroyed
+	_cleanup_all_resources()
+
+func _cleanup_all_resources():
+	# Clean up all sensor resources
+	var sensor_ids = _sensors.keys()
+	for sensor_id in sensor_ids:
+		unregister_sensor(sensor_id)
+	
+	# Clean up compute resources
+	if _rd != null:
+		if _pipeline_rid != RID():
+			_rd.free_rid(_pipeline_rid)
+			_pipeline_rid = RID()
+		
+		if _shader_rid != RID():
+			_rd.free_rid(_shader_rid)
+			_shader_rid = RID()
+		
+		# RenderingDevice cleanup is handled automatically by Godot
+		_rd = null
 
 func register_sensor(node: Node) -> int:
 	var id := _next_id
@@ -105,7 +127,7 @@ func register_sensor(node: Node) -> int:
 		push_warning("LightSensorComputeManager: Cannot create buffers - RenderingDevice is null. Sensor registration may fail.")
 	
 	_sensors[id] = state
-	# print_debug("LightSensorComputeManager: Registered sensor with ID: " + str(id) + " (Total sensors: " + str(_sensors.size()) + ")")
+	# print("LightSensorComputeManager: Registered sensor with ID: " + str(id) + " (Total sensors: " + str(_sensors.size()) + ")")
 	return id
 
 func unregister_sensor(id: int) -> void:
@@ -114,19 +136,21 @@ func unregister_sensor(id: int) -> void:
 	
 	var state: SensorState = _sensors[id]
 	
-	# Clean up resources
-	for buffer in state.output_buffers:
-		if buffer != RID():
-			_rd.free_rid(buffer)
+	# Only attempt to free RIDs if RenderingDevice is still valid
+	if _rd != null:
+		# Clean up resources
+		for buffer in state.output_buffers:
+			if buffer != RID():
+				_rd.free_rid(buffer)
+		
+		# Note: uniform_sets are freed in _create_sensor_uniform_sets, so we don't need to free them here
+		# The uniform sets are recreated for each refresh and freed immediately after use
+		
+		# Clean up sampler
+		if state.sampler_rid != RID():
+			_rd.free_rid(state.sampler_rid)
 	
-	for uniform_set in state.uniform_sets:
-		if uniform_set != RID():
-			_rd.free_rid(uniform_set)
-	
-	# Clean up sampler
-	if state.sampler_rid != RID():
-		_rd.free_rid(state.sampler_rid)
-	
+	# Remove from collections regardless of RenderingDevice state
 	_sensors.erase(id)
 	_pending_queue.erase(id)
 
@@ -137,12 +161,17 @@ func enqueue_refresh(id: int, texture: Texture2D) -> void:
 	
 	var state: SensorState = _sensors[id]
 	if state.pending:
-		push_warning("LightSensorComputeManager: Sensor ID " + str(id) + " already has pending work.")
+		# Skip redundant refresh requests - this is normal during high refresh rates
+		# The pending work will complete and the sensor will be available for the next cycle
 		return
 	
 	if not use_gpu_compute:
 		push_error("LightSensorComputeManager: GPU compute is disabled. Cannot enqueue refresh.")
 		return
+	
+	# Debug: Print first few enqueue calls to verify GPU compute is being used
+	# if _sensors.size() <= 5 or id <= 5:
+	#	print("LightSensorComputeManager: Enqueuing GPU compute for sensor ID: " + str(id))
 	
 	# Get texture RID from the SubViewport
 	# For SubViewport textures, we need to get the actual texture resource
@@ -165,9 +194,8 @@ func _process(_delta: float) -> void:
 	_poll_completed_results()
 
 func _process_compute_queue() -> void:
-	var dispatches_this_frame := 0
-	
-	while _pending_queue.size() > 0 and dispatches_this_frame < max_dispatches_per_frame:
+	# Process all pending sensors without frame limit for maximum throughput
+	while _pending_queue.size() > 0:
 		var sensor_id := _pending_queue.pop_front()
 		if not _sensors.has(sensor_id):
 			continue
@@ -177,7 +205,6 @@ func _process_compute_queue() -> void:
 			continue
 		
 		_dispatch_compute(sensor_id, state)
-		dispatches_this_frame += 1
 
 func _dispatch_compute(sensor_id: int, state: SensorState) -> void:
 	# Create uniform sets for this sensor (including texture creation/update)
@@ -217,9 +244,10 @@ func _dispatch_compute(sensor_id: int, state: SensorState) -> void:
 
 func _create_sensor_uniform_sets(state: SensorState) -> void:
 	# Clean up old uniform sets
-	for uniform_set in state.uniform_sets:
-		if uniform_set != RID():
-			_rd.free_rid(uniform_set)
+	if _rd != null:
+		for uniform_set in state.uniform_sets:
+			if uniform_set != RID():
+				_rd.free_rid(uniform_set)
 	
 	state.uniform_sets.clear()
 	

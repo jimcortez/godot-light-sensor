@@ -8,10 +8,18 @@ signal test_completed(test_type: String, results: Dictionary)
 signal test_progress(progress: float, status: String)
 
 # Test configuration
-@export var test_duration: float = 10.0
-@export var grid_size: int = 2
+@export var test_duration: float = 5.0
+@export var grid_size: int = 20
 @export var color_cycle_speed: float = 1.0
 @export var target_fps_threshold: float = 55.0
+
+# Adaptive testing configuration
+@export var engine_fps_goal: float = 40.0  # Minimum acceptable engine FPS
+@export var engine_fps_max: float = 55.0   # Maximum expected engine FPS
+@export var outgoing_fps_goal: float = 20.0  # Target outgoing FPS to start with
+@export var outgoing_fps_min: float = 10.0   # Minimum outgoing FPS
+@export var outgoing_fps_step: float = 10.0   # Step size for decreasing outgoing FPS
+@export var test_passes_per_rate: int = 1    # Number of test passes per refresh rate
 
 # Test state
 var is_testing: bool = false
@@ -20,6 +28,15 @@ var is_batch_test: bool = false
 var test_start_time: float = 0.0
 var test_end_time: float = 0.0
 var test_start_time_precise: float = 0.0
+
+# Adaptive testing state
+var is_adaptive_test: bool = false
+var current_outgoing_fps_target: float = 0.0
+var current_pass: int = 0
+var adaptive_test_results: Array[Dictionary] = []
+var adaptive_test_recommendations: Dictionary = {}
+var current_adaptive_mode: String = ""  # "CPU" or "GPU"
+var adaptive_test_phases_completed: int = 0  # Track completed phases (CPU=1, GPU=2)
 
 # FPS monitoring
 var fps_samples: Array[float] = []
@@ -67,6 +84,11 @@ func _ready():
 	update_status("Ready")
 	update_fps_display(0)
 	update_progress_bar(0.0)
+	
+	# Set the sensor grid size to match the benchmark configuration
+	if sensor_grid and sensor_grid.has_method("set_grid_size"):
+		await sensor_grid.set_grid_size(grid_size)
+		print("Benchmark controller set sensor grid size to: " + str(grid_size) + "x" + str(grid_size))
 	
 	# Connect to sensor grid signals
 	if sensor_grid.has_signal("refresh_completed"):
@@ -120,6 +142,44 @@ func start_batch_test():
 	print("Starting batch benchmark test...")
 	is_batch_test = true
 	await start_test("GPU")  # Start with GPU for batch test
+
+func start_adaptive_test():
+	if is_testing:
+		return
+	
+	print("Starting adaptive benchmark test...")
+	is_adaptive_test = true
+	is_batch_test = false
+	adaptive_test_results.clear()
+	adaptive_test_recommendations.clear()
+	current_outgoing_fps_target = outgoing_fps_goal
+	current_pass = 0
+	current_adaptive_mode = "CPU"
+	adaptive_test_phases_completed = 0
+	
+	# Start with CPU mode for adaptive testing
+	await start_adaptive_test_phase("CPU")
+
+func start_adaptive_test_phase(test_type: String):
+	print("============================================================")
+	print("ADAPTIVE TEST PHASE: " + test_type + " mode")
+	print("Target outgoing FPS: " + str(current_outgoing_fps_target))
+	print("Original goal: " + str(outgoing_fps_goal))
+	print("Pass: " + str(current_pass + 1) + "/" + str(test_passes_per_rate))
+	print("Current adaptive mode: " + str(current_adaptive_mode))
+	print("============================================================")
+	
+	# Ensure we're in the right mode
+	current_adaptive_mode = test_type
+	
+	# Set the refresh rate for the sensor grid
+	if sensor_grid and sensor_grid.has_method("set_refresh_rate"):
+		var refresh_interval = 1.0 / current_outgoing_fps_target
+		sensor_grid.set_refresh_rate(refresh_interval)
+		print("Set sensor refresh rate to: " + str(refresh_interval) + "s (" + str(current_outgoing_fps_target) + " FPS)")
+	
+	# Start the test with the configured refresh rate
+	await start_test(test_type)
 
 func start_test(test_type: String):
 	is_testing = true
@@ -239,6 +299,14 @@ func complete_test():
 	test_end_time = Time.get_unix_time_from_system()
 	var test_duration_actual = test_end_time - test_start_time
 	
+	# Calculate results
+	var results = calculate_test_results()
+	
+	# Handle adaptive testing logic
+	if is_adaptive_test:
+		await handle_adaptive_test_completion(results, test_duration_actual)
+		return
+	
 	if is_batch_test:
 		print("============================================================")
 		print("BATCH TEST PHASE: " + current_test_type + " test completed")
@@ -246,9 +314,6 @@ func complete_test():
 		print("============================================================")
 	else:
 		print("Test completed. Actual duration: " + str(test_duration_actual) + "s (target: " + str(test_duration) + "s)")
-	
-	# Calculate results
-	var results = calculate_test_results()
 	
 	# Store results
 	test_results[current_test_type] = results
@@ -298,6 +363,631 @@ func complete_test():
 	# Stop sensor refresh cycle
 	if sensor_grid:
 		sensor_grid.stop_refresh_cycle()
+
+func handle_adaptive_test_completion(results: Dictionary, test_duration_actual: float):
+	print("============================================================")
+	print("ADAPTIVE TEST PHASE: " + current_test_type + " test completed")
+	print("Target outgoing FPS: " + str(current_outgoing_fps_target))
+	print("Pass: " + str(current_pass + 1) + "/" + str(test_passes_per_rate))
+	print("Actual duration: " + str(test_duration_actual) + "s (target: " + str(test_duration) + "s)")
+	print("============================================================")
+	
+	# Add metadata to results for adaptive testing
+	results["adaptive_test_metadata"] = {
+		"outgoing_fps_target": current_outgoing_fps_target,
+		"pass_number": current_pass,
+		"test_type": current_test_type
+	}
+	
+	# Store results
+	adaptive_test_results.append(results)
+	
+	# Check if we need more passes at this refresh rate
+	current_pass += 1
+	if current_pass < test_passes_per_rate:
+		print("Running additional pass at same refresh rate...")
+		update_status("Adaptive test - " + current_test_type + " pass " + str(current_pass + 1) + "/" + str(test_passes_per_rate))
+		
+		# Reset testing state and run another pass
+		is_testing = false
+		current_test_type = ""
+		
+		await get_tree().create_timer(1.0).timeout  # Brief pause between passes
+		await start_adaptive_test_phase("CPU")  # Continue with CPU mode
+		return
+	
+	# All passes completed for this refresh rate
+	print("All passes completed for outgoing FPS target: " + str(current_outgoing_fps_target))
+	
+	# Calculate average results for this refresh rate
+	var avg_results = calculate_average_results_for_rate(current_outgoing_fps_target)
+	var avg_engine_fps = avg_results.get("avg_fps", 0)
+	
+	print("Average engine FPS for " + str(current_outgoing_fps_target) + " FPS: " + str(round(avg_engine_fps * 100) / 100))
+	
+	# Check if we met the engine FPS goal AND achieved the target outgoing FPS
+	var avg_outgoing_fps = avg_results.get("avg_outgoing_fps", 0)
+	var outgoing_fps_target_achieved = avg_outgoing_fps >= (current_outgoing_fps_target * 0.9)  # Allow 10% tolerance
+	
+	if avg_engine_fps >= engine_fps_goal and outgoing_fps_target_achieved:
+		print("✓ Engine FPS goal met! Average: " + str(round(avg_engine_fps * 100) / 100) + " >= " + str(engine_fps_goal))
+		print("✓ Outgoing FPS target achieved! Average: " + str(round(avg_outgoing_fps * 100) / 100) + " FPS (target: " + str(current_outgoing_fps_target) + " FPS)")
+		
+		# Check if we can try a higher refresh rate
+		var next_target = current_outgoing_fps_target + outgoing_fps_step
+		if next_target <= outgoing_fps_goal:
+			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
+			current_outgoing_fps_target = next_target
+			current_pass = 0
+			update_status("Adaptive test - trying higher refresh rate: " + str(current_outgoing_fps_target) + " FPS")
+			
+			# Reset testing state and continue with new target
+			is_testing = false
+			current_test_type = ""
+			
+			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
+			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
+			return
+		else:
+			# We've reached the maximum target for this mode - check if we need to switch to GPU
+			if current_adaptive_mode == "CPU":
+				print("CPU phase completed - switching to GPU phase")
+				await switch_to_gpu_phase()
+				return
+			else:
+				# Both phases completed - complete the test
+				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+				await complete_adaptive_test()
+				return
+	
+	# Check different scenarios
+	if avg_engine_fps >= engine_fps_goal:
+		print("✓ Engine FPS goal met! Average: " + str(round(avg_engine_fps * 100) / 100) + " >= " + str(engine_fps_goal))
+		print("⚠ Outgoing FPS target not achieved! Average: " + str(round(avg_outgoing_fps * 100) / 100) + " FPS (target: " + str(current_outgoing_fps_target) + " FPS)")
+		
+		# Engine FPS is good but outgoing FPS is low - try a higher refresh rate
+		var next_target = current_outgoing_fps_target + outgoing_fps_step
+		if next_target <= outgoing_fps_goal:
+			print("Trying higher outgoing FPS target: " + str(next_target) + " FPS")
+			current_outgoing_fps_target = next_target
+			current_pass = 0
+			update_status("Adaptive test - trying higher refresh rate: " + str(current_outgoing_fps_target) + " FPS")
+			
+			# Reset testing state and continue with new target
+			is_testing = false
+			current_test_type = ""
+			
+			await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
+			await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
+			return
+		else:
+			# We've reached the maximum target for this mode - check if we need to switch to GPU
+			if current_adaptive_mode == "CPU":
+				print("CPU phase completed - switching to GPU phase")
+				await switch_to_gpu_phase()
+				return
+			else:
+				# Both phases completed - complete the test
+				print("Reached maximum outgoing FPS target: " + str(outgoing_fps_goal))
+				await complete_adaptive_test()
+				return
+	else:
+		print("⚠ Engine FPS goal not met. Average: " + str(round(avg_engine_fps * 100) / 100) + " < " + str(engine_fps_goal))
+		
+		# Decrease outgoing FPS target and continue
+		current_outgoing_fps_target -= outgoing_fps_step
+		current_pass = 0
+		
+		# Check if we've reached the minimum outgoing FPS
+		if current_outgoing_fps_target < outgoing_fps_min:
+			# Current mode completed - check if we need to switch to GPU
+			if current_adaptive_mode == "CPU":
+				print("CPU phase completed - switching to GPU phase")
+				await switch_to_gpu_phase()
+				return
+			else:
+				print("Reached minimum outgoing FPS limit: " + str(outgoing_fps_min))
+				await complete_adaptive_test()
+				return
+		
+		print("Decreasing outgoing FPS target to: " + str(current_outgoing_fps_target))
+		update_status("Adaptive test - trying lower refresh rate: " + str(current_outgoing_fps_target) + " FPS")
+		
+		# Reset testing state and continue with new target
+		is_testing = false
+		current_test_type = ""
+		
+		await get_tree().create_timer(2.0).timeout  # Longer pause between different refresh rates
+		await start_adaptive_test_phase(current_adaptive_mode)  # Continue with current mode
+
+func switch_to_gpu_phase():
+	print("============================================================")
+	print("ADAPTIVE TEST PHASE TRANSITION: CPU → GPU")
+	print("============================================================")
+	
+	# Mark CPU phase as completed
+	adaptive_test_phases_completed = 1
+	current_adaptive_mode = "GPU"
+	
+	# Reset for GPU phase - start at the original goal, not where CPU left off
+	current_outgoing_fps_target = outgoing_fps_goal
+	current_pass = 0
+	
+	# Ensure any lingering test is properly stopped
+	is_testing = false
+	current_test_type = ""
+	
+	print("GPU phase reset - starting at outgoing FPS target: " + str(current_outgoing_fps_target))
+	update_status("Adaptive test - switching to GPU mode...")
+	
+	# Brief pause before starting GPU phase
+	await get_tree().create_timer(3.0).timeout
+	
+	# Start GPU phase
+	await start_adaptive_test_phase("GPU")
+
+func calculate_average_results_for_rate(outgoing_fps_target: float) -> Dictionary:
+	var results_for_rate = []
+	
+	# Find all results for this refresh rate
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		if metadata.get("outgoing_fps_target", 0) == outgoing_fps_target:
+			results_for_rate.append(result)
+	
+	if results_for_rate.is_empty():
+		return {}
+	
+	# Calculate averages
+	var avg_results = {}
+	var fps_sum = 0.0
+	var outgoing_fps_sum = 0.0
+	var max_fps_sum = 0.0
+	var max_outgoing_fps_sum = 0.0
+	var min_fps_sum = 999.0
+	var min_outgoing_fps_sum = 999.0
+	
+	for result in results_for_rate:
+		fps_sum += result.get("avg_fps", 0)
+		outgoing_fps_sum += result.get("avg_outgoing_fps", 0)
+		max_fps_sum += result.get("max_fps", 0)
+		max_outgoing_fps_sum += result.get("max_outgoing_fps", 0)
+		min_fps_sum = min(min_fps_sum, result.get("min_fps", 999.0))
+		min_outgoing_fps_sum = min(min_outgoing_fps_sum, result.get("min_outgoing_fps", 999.0))
+	
+	var count = results_for_rate.size()
+	avg_results["avg_fps"] = fps_sum / count
+	avg_results["avg_outgoing_fps"] = outgoing_fps_sum / count
+	avg_results["max_fps"] = max_fps_sum / count
+	avg_results["max_outgoing_fps"] = max_outgoing_fps_sum / count
+	avg_results["min_fps"] = min_fps_sum
+	avg_results["min_outgoing_fps"] = min_outgoing_fps_sum
+	avg_results["pass_count"] = count
+	avg_results["outgoing_fps_target"] = outgoing_fps_target
+	
+	return avg_results
+
+func calculate_average_results_for_rate_and_mode(outgoing_fps_target: float, mode: String) -> Dictionary:
+	var results_for_rate = []
+	
+	# Find all results for this refresh rate and mode
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		if metadata.get("outgoing_fps_target", 0) == outgoing_fps_target and metadata.get("test_type", "") == mode:
+			results_for_rate.append(result)
+	
+	if results_for_rate.is_empty():
+		return {}
+	
+	# Calculate averages
+	var avg_results = {}
+	var fps_sum = 0.0
+	var outgoing_fps_sum = 0.0
+	var max_fps_sum = 0.0
+	var max_outgoing_fps_sum = 0.0
+	var min_fps_sum = 999.0
+	var min_outgoing_fps_sum = 999.0
+	
+	for result in results_for_rate:
+		fps_sum += result.get("avg_fps", 0)
+		outgoing_fps_sum += result.get("avg_outgoing_fps", 0)
+		max_fps_sum += result.get("max_fps", 0)
+		max_outgoing_fps_sum += result.get("max_outgoing_fps", 0)
+		min_fps_sum = min(min_fps_sum, result.get("min_fps", 999.0))
+		min_outgoing_fps_sum = min(min_outgoing_fps_sum, result.get("min_outgoing_fps", 999.0))
+	
+	var count = results_for_rate.size()
+	avg_results["avg_fps"] = fps_sum / count
+	avg_results["avg_outgoing_fps"] = outgoing_fps_sum / count
+	avg_results["max_fps"] = max_fps_sum / count
+	avg_results["max_outgoing_fps"] = max_outgoing_fps_sum / count
+	avg_results["min_fps"] = min_fps_sum
+	avg_results["min_outgoing_fps"] = min_outgoing_fps_sum
+	avg_results["pass_count"] = count
+	avg_results["outgoing_fps_target"] = outgoing_fps_target
+	avg_results["mode"] = mode
+	
+	return avg_results
+
+func complete_adaptive_test():
+	print("============================================================")
+	print("ADAPTIVE TEST COMPLETED")
+	print("============================================================")
+	
+	# Calculate recommendations
+	adaptive_test_recommendations = calculate_adaptive_recommendations()
+	
+	# Display results and recommendations
+	display_adaptive_results()
+	
+	# Reset testing state
+	is_testing = false
+	current_test_type = ""
+	is_adaptive_test = false
+	current_outgoing_fps_target = 0.0
+	current_pass = 0
+	current_adaptive_mode = ""
+	adaptive_test_phases_completed = 0
+	
+	# Stop sensor refresh cycle
+	if sensor_grid:
+		sensor_grid.stop_refresh_cycle()
+	
+	print("Adaptive test completed successfully!")
+
+func calculate_adaptive_recommendations() -> Dictionary:
+	var recommendations = {}
+	
+	# Find the highest outgoing FPS that met the engine FPS goal AND achieved good outgoing FPS
+	var best_outgoing_fps = 0.0
+	var best_results = {}
+	var best_outgoing_fps_achieved = 0.0
+	
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		var outgoing_fps_target = metadata.get("outgoing_fps_target", 0)
+		var avg_engine_fps = result.get("avg_fps", 0)
+		var avg_outgoing_fps = result.get("avg_outgoing_fps", 0)
+		
+		# Check if this result meets engine FPS goal and has good outgoing FPS achievement
+		if avg_engine_fps >= engine_fps_goal:
+			# Calculate how well it achieved the outgoing FPS target (with 90% tolerance)
+			var outgoing_fps_achievement = avg_outgoing_fps / outgoing_fps_target if outgoing_fps_target > 0 else 0
+			
+			# Prefer results that achieve better outgoing FPS rates
+			if outgoing_fps_target > best_outgoing_fps or (outgoing_fps_target == best_outgoing_fps and avg_outgoing_fps > best_outgoing_fps_achieved):
+				best_outgoing_fps = outgoing_fps_target
+				best_results = result
+				best_outgoing_fps_achieved = avg_outgoing_fps
+	
+	if best_outgoing_fps > 0:
+		var achievement_percentage = (best_outgoing_fps_achieved / best_outgoing_fps) * 100 if best_outgoing_fps > 0 else 0
+		recommendations["recommended_outgoing_fps"] = best_outgoing_fps
+		recommendations["achieved_engine_fps"] = best_results.get("avg_fps", 0)
+		recommendations["achieved_outgoing_fps"] = best_outgoing_fps_achieved
+		recommendations["achievement_percentage"] = achievement_percentage
+		
+		if achievement_percentage >= 90:
+			recommendations["recommendation_type"] = "optimal"
+			recommendations["recommendation_text"] = generate_sensor_recommendation(best_outgoing_fps, best_outgoing_fps_achieved, best_results.get("avg_fps", 0), achievement_percentage, "optimal")
+		elif achievement_percentage >= 70:
+			recommendations["recommendation_type"] = "good"
+			recommendations["recommendation_text"] = generate_sensor_recommendation(best_outgoing_fps, best_outgoing_fps_achieved, best_results.get("avg_fps", 0), achievement_percentage, "good")
+		else:
+			recommendations["recommendation_type"] = "limited"
+			recommendations["recommendation_text"] = generate_sensor_recommendation(best_outgoing_fps, best_outgoing_fps_achieved, best_results.get("avg_fps", 0), achievement_percentage, "limited")
+	else:
+		# No refresh rate met the engine FPS goal - find the best compromise
+		var highest_fps = 0.0
+		var best_compromise_results = {}
+		
+		for result in adaptive_test_results:
+			var metadata = result.get("adaptive_test_metadata", {})
+			var outgoing_fps_target = metadata.get("outgoing_fps_target", 0)
+			var avg_engine_fps = result.get("avg_fps", 0)
+			
+			if avg_engine_fps > highest_fps:
+				highest_fps = avg_engine_fps
+				best_compromise_results = result
+				best_outgoing_fps = outgoing_fps_target
+		
+		recommendations["recommended_outgoing_fps"] = best_outgoing_fps
+		recommendations["achieved_engine_fps"] = highest_fps
+		recommendations["achieved_outgoing_fps"] = best_compromise_results.get("avg_outgoing_fps", 0)
+		recommendations["achievement_percentage"] = 0
+		recommendations["recommendation_type"] = "compromise"
+		recommendations["recommendation_text"] = generate_sensor_recommendation(best_outgoing_fps, best_compromise_results.get("avg_outgoing_fps", 0), highest_fps, 0, "compromise")
+	
+	# Hardware assessment based on achieved outgoing FPS
+	var achieved_outgoing_fps = recommendations.get("achieved_outgoing_fps", 0)
+	if achieved_outgoing_fps >= 30:
+		recommendations["hardware_assessment"] = "high"
+		recommendations["hardware_text"] = "Achieved outgoing FPS: " + str(round(achieved_outgoing_fps * 10) / 10) + " FPS"
+	elif achieved_outgoing_fps >= 20:
+		recommendations["hardware_assessment"] = "medium"
+		recommendations["hardware_text"] = "Achieved outgoing FPS: " + str(round(achieved_outgoing_fps * 10) / 10) + " FPS"
+	elif achieved_outgoing_fps >= 10:
+		recommendations["hardware_assessment"] = "moderate"
+		recommendations["hardware_text"] = "Achieved outgoing FPS: " + str(round(achieved_outgoing_fps * 10) / 10) + " FPS"
+	else:
+		recommendations["hardware_assessment"] = "low"
+		recommendations["hardware_text"] = "Achieved outgoing FPS: " + str(round(achieved_outgoing_fps * 10) / 10) + " FPS"
+	
+	return recommendations
+
+func generate_sensor_recommendation(target_fps: float, achieved_fps: float, engine_fps: float, achievement_percentage: float, recommendation_type: String) -> String:
+	var text = ""
+	
+	# Separate CPU and GPU results
+	var cpu_results = []
+	var gpu_results = []
+	
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		if metadata.get("test_type", "") == "CPU":
+			cpu_results.append(result)
+		elif metadata.get("test_type", "") == "GPU":
+			gpu_results.append(result)
+	
+	# Find the maximum refresh rate that meets engine FPS goal for each mode
+	var cpu_max_fps = 0.0
+	var cpu_max_engine_fps = 0.0
+	var gpu_max_fps = 0.0
+	var gpu_max_engine_fps = 0.0
+	
+	# For CPU mode - find highest FPS that meets engine goal
+	for result in cpu_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		var fps_target = metadata.get("outgoing_fps_target", 0)
+		var engine_fps_result = result.get("avg_fps", 0)
+		if engine_fps_result >= engine_fps_goal and fps_target > cpu_max_fps:
+			cpu_max_fps = fps_target
+			cpu_max_engine_fps = engine_fps_result
+	
+	# For GPU mode - find highest FPS that meets engine goal
+	for result in gpu_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		var fps_target = metadata.get("outgoing_fps_target", 0)
+		var engine_fps_result = result.get("avg_fps", 0)
+		if engine_fps_result >= engine_fps_goal and fps_target > gpu_max_fps:
+			gpu_max_fps = fps_target
+			gpu_max_engine_fps = engine_fps_result
+	
+	# If no results meet engine FPS goal, find the best compromise
+	var cpu_best_compromise_fps = 0.0
+	var cpu_best_compromise_engine_fps = 0.0
+	var gpu_best_compromise_fps = 0.0
+	var gpu_best_compromise_engine_fps = 0.0
+	
+	if cpu_max_fps == 0:  # No CPU result met engine goal
+		# Find the best compromise: prioritize refresh rates that get close to engine goal
+		for result in cpu_results:
+			var metadata = result.get("adaptive_test_metadata", {})
+			var fps_target = metadata.get("outgoing_fps_target", 0)
+			var engine_fps_result = result.get("avg_fps", 0)
+			
+			# Prefer refresh rates that achieve at least 80% of engine goal
+			if engine_fps_result >= engine_fps_goal * 0.8:
+				if cpu_best_compromise_fps == 0 or fps_target > cpu_best_compromise_fps:
+					cpu_best_compromise_fps = fps_target
+					cpu_best_compromise_engine_fps = engine_fps_result
+		
+		# If no good compromise found, use the result with highest engine FPS
+		if cpu_best_compromise_fps == 0:
+			for result in cpu_results:
+				var metadata = result.get("adaptive_test_metadata", {})
+				var fps_target = metadata.get("outgoing_fps_target", 0)
+				var engine_fps_result = result.get("avg_fps", 0)
+				if engine_fps_result > cpu_best_compromise_engine_fps:
+					cpu_best_compromise_fps = fps_target
+					cpu_best_compromise_engine_fps = engine_fps_result
+	
+	if gpu_max_fps == 0:  # No GPU result met engine goal
+		# Find the best compromise: prioritize refresh rates that get close to engine goal
+		for result in gpu_results:
+			var metadata = result.get("adaptive_test_metadata", {})
+			var fps_target = metadata.get("outgoing_fps_target", 0)
+			var engine_fps_result = result.get("avg_fps", 0)
+			
+			# Prefer refresh rates that achieve at least 80% of engine goal
+			if engine_fps_result >= engine_fps_goal * 0.8:
+				if gpu_best_compromise_fps == 0 or fps_target > gpu_best_compromise_fps:
+					gpu_best_compromise_fps = fps_target
+					gpu_best_compromise_engine_fps = engine_fps_result
+		
+		# If no good compromise found, use the result with highest engine FPS
+		if gpu_best_compromise_fps == 0:
+			for result in gpu_results:
+				var metadata = result.get("adaptive_test_metadata", {})
+				var fps_target = metadata.get("outgoing_fps_target", 0)
+				var engine_fps_result = result.get("avg_fps", 0)
+				if engine_fps_result > gpu_best_compromise_engine_fps:
+					gpu_best_compromise_fps = fps_target
+					gpu_best_compromise_engine_fps = engine_fps_result
+	
+	text += "MAXIMUM SENSOR REFRESH RATE RECOMMENDATIONS:\n"
+	text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+	
+	# CPU recommendations
+	if cpu_max_fps > 0:
+		text += "CPU Mode: Maximum " + str(round(cpu_max_fps)) + " FPS refresh rate\n"
+		text += "  → Refresh interval: " + str(round((1.0 / cpu_max_fps) * 1000) / 1000) + "s\n"
+		text += "  → Engine FPS: " + str(round(cpu_max_engine_fps * 10) / 10) + " (meets goal of " + str(engine_fps_goal) + "+)\n\n"
+	elif cpu_best_compromise_fps > 0:
+		text += "CPU Mode: Maximum " + str(round(cpu_best_compromise_fps)) + " FPS refresh rate\n"
+		text += "  → Refresh interval: " + str(round((1.0 / cpu_best_compromise_fps) * 1000) / 1000) + "s\n"
+		text += "  → Engine FPS: " + str(round(cpu_best_compromise_engine_fps * 10) / 10) + " (below goal of " + str(engine_fps_goal) + "+)\n\n"
+	
+	# GPU recommendations
+	if gpu_max_fps > 0:
+		text += "GPU Mode: Maximum " + str(round(gpu_max_fps)) + " FPS refresh rate\n"
+		text += "  → Refresh interval: " + str(round((1.0 / gpu_max_fps) * 1000) / 1000) + "s\n"
+		text += "  → Engine FPS: " + str(round(gpu_max_engine_fps * 10) / 10) + " (meets goal of " + str(engine_fps_goal) + "+)\n\n"
+	elif gpu_best_compromise_fps > 0:
+		text += "GPU Mode: Maximum " + str(round(gpu_best_compromise_fps)) + " FPS refresh rate\n"
+		text += "  → Refresh interval: " + str(round((1.0 / gpu_best_compromise_fps) * 1000) / 1000) + "s\n"
+		text += "  → Engine FPS: " + str(round(gpu_best_compromise_engine_fps * 10) / 10) + " (below goal of " + str(engine_fps_goal) + "+)\n\n"
+	
+	# Best mode recommendation
+	if cpu_max_fps > 0 and gpu_max_fps > 0:
+		if gpu_max_fps > cpu_max_fps:
+			text += "RECOMMENDATION: Use GPU mode for maximum " + str(round(gpu_max_fps)) + " FPS\n"
+		elif cpu_max_fps > gpu_max_fps:
+			text += "RECOMMENDATION: Use CPU mode for maximum " + str(round(cpu_max_fps)) + " FPS\n"
+		else:
+			text += "RECOMMENDATION: Both modes support maximum " + str(round(cpu_max_fps)) + " FPS\n"
+	elif cpu_max_fps > 0:
+		text += "RECOMMENDATION: Use CPU mode for maximum " + str(round(cpu_max_fps)) + " FPS\n"
+	elif gpu_max_fps > 0:
+		text += "RECOMMENDATION: Use GPU mode for maximum " + str(round(gpu_max_fps)) + " FPS\n"
+	elif cpu_best_compromise_fps > 0 or gpu_best_compromise_fps > 0:
+		text += "RECOMMENDATION: Engine FPS goal not met - use lowest tested refresh rate\n"
+	
+	return text
+
+func display_adaptive_results():
+	var text = "[font_size=20][b]Adaptive Benchmark Results[/b][/font_size]\n\n"
+	
+	text += "[font_size=18][b]Test Summary:[/b][/font_size]\n"
+	text += "Engine FPS Goal: " + str(engine_fps_goal) + " (minimum acceptable)\n"
+	text += "Engine FPS Max: " + str(engine_fps_max) + " (target range)\n"
+	text += "Outgoing FPS Range: " + str(outgoing_fps_min) + " - " + str(outgoing_fps_goal) + " FPS\n"
+	text += "Test Passes per Rate: " + str(test_passes_per_rate) + "\n\n"
+	
+	# Separate CPU and GPU results
+	var cpu_results = []
+	var gpu_results = []
+	
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		if metadata.get("test_type", "") == "CPU":
+			cpu_results.append(result)
+		elif metadata.get("test_type", "") == "GPU":
+			gpu_results.append(result)
+	
+	# Display CPU results
+	if cpu_results.size() > 0:
+		text += "[font_size=18][b]CPU Mode Results:[/b][/font_size]\n"
+		text += display_mode_results(cpu_results, "CPU")
+		text += "\n"
+	
+	# Display GPU results
+	if gpu_results.size() > 0:
+		text += "[font_size=18][b]GPU Mode Results:[/b][/font_size]\n"
+		text += display_mode_results(gpu_results, "GPU")
+		text += "\n"
+	
+	text += "\n[font_size=18][b]Recommendations:[/b][/font_size]\n"
+	text += adaptive_test_recommendations.get("recommendation_text", "No recommendation available") + "\n\n"
+	
+	text += "[font_size=18][b]Hardware Assessment:[/b][/font_size]\n"
+	text += adaptive_test_recommendations.get("hardware_text", "No assessment available") + "\n"
+	
+	if results_ui and results_ui.has_method("update_results_display"):
+		results_ui.update_results_display(text)
+	else:
+		results_text.text = text
+	
+	# Log to console
+	log_adaptive_results_to_console()
+
+func display_mode_results(mode_results: Array, mode_name: String) -> String:
+	var text = ""
+	
+	# Group results by refresh rate for this mode
+	var rates_tested = []
+	for result in mode_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		var rate = metadata.get("outgoing_fps_target", 0)
+		if rate not in rates_tested:
+			rates_tested.append(rate)
+	
+	rates_tested.sort()
+	
+	for rate in rates_tested:
+		var avg_results = calculate_average_results_for_rate_and_mode(rate, mode_name)
+		text += "\n[b]Outgoing FPS: " + str(rate) + " FPS[/b]\n"
+		text += "  Average Engine FPS: " + str(round(avg_results.get("avg_fps", 0) * 100) / 100) + "\n"
+		text += "  Average Outgoing FPS: " + str(round(avg_results.get("avg_outgoing_fps", 0) * 100) / 100) + "\n"
+		text += "  Max Engine FPS: " + str(round(avg_results.get("max_fps", 0) * 100) / 100) + "\n"
+		text += "  Min Engine FPS: " + str(round(avg_results.get("min_fps", 0) * 100) / 100) + "\n"
+		text += "  Test Passes: " + str(avg_results.get("pass_count", 0)) + "\n"
+		
+		# Status indicator
+		var avg_fps = avg_results.get("avg_fps", 0)
+		if avg_fps >= engine_fps_goal:
+			text += "  Status: ✓ MEETS ENGINE FPS GOAL\n"
+		else:
+			text += "  Status: ⚠ BELOW ENGINE FPS GOAL\n"
+	
+	return text
+
+func log_adaptive_results_to_console():
+	print("\n================================================================================")
+	print("ADAPTIVE BENCHMARK RESULTS AND RECOMMENDATIONS")
+	print("================================================================================")
+	
+	print("\nTEST CONFIGURATION:")
+	print("  Engine FPS Goal: " + str(engine_fps_goal) + " (minimum acceptable)")
+	print("  Engine FPS Max: " + str(engine_fps_max) + " (target range)")
+	print("  Outgoing FPS Range: " + str(outgoing_fps_min) + " - " + str(outgoing_fps_goal) + " FPS")
+	print("  Test Passes per Rate: " + str(test_passes_per_rate))
+	
+	# Separate CPU and GPU results for console logging
+	var cpu_results = []
+	var gpu_results = []
+	
+	for result in adaptive_test_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		if metadata.get("test_type", "") == "CPU":
+			cpu_results.append(result)
+		elif metadata.get("test_type", "") == "GPU":
+			gpu_results.append(result)
+	
+	# Log CPU results
+	if cpu_results.size() > 0:
+		print("\nCPU MODE RESULTS:")
+		log_mode_results_to_console(cpu_results, "CPU")
+	
+	# Log GPU results
+	if gpu_results.size() > 0:
+		print("\nGPU MODE RESULTS:")
+		log_mode_results_to_console(gpu_results, "GPU")
+	
+	print("\nRECOMMENDATIONS:")
+	print("  " + adaptive_test_recommendations.get("recommendation_text", "No recommendation available"))
+	
+	print("\nHARDWARE ASSESSMENT:")
+	print("  " + adaptive_test_recommendations.get("hardware_text", "No assessment available"))
+	
+	print("================================================================================")
+
+func log_mode_results_to_console(mode_results: Array, mode_name: String):
+	# Group results by refresh rate for this mode
+	var rates_tested = []
+	for result in mode_results:
+		var metadata = result.get("adaptive_test_metadata", {})
+		var rate = metadata.get("outgoing_fps_target", 0)
+		if rate not in rates_tested:
+			rates_tested.append(rate)
+	
+	rates_tested.sort()
+	
+	for rate in rates_tested:
+		var avg_results = calculate_average_results_for_rate_and_mode(rate, mode_name)
+		print("\n  Outgoing FPS: " + str(rate) + " FPS")
+		print("    Average Engine FPS: " + str(round(avg_results.get("avg_fps", 0) * 100) / 100))
+		print("    Average Outgoing FPS: " + str(round(avg_results.get("avg_outgoing_fps", 0) * 100) / 100))
+		print("    Max Engine FPS: " + str(round(avg_results.get("max_fps", 0) * 100) / 100))
+		print("    Min Engine FPS: " + str(round(avg_results.get("min_fps", 0) * 100) / 100))
+		print("    Test Passes: " + str(avg_results.get("pass_count", 0)))
+		
+		# Status indicator
+		var avg_fps = avg_results.get("avg_fps", 0)
+		if avg_fps >= engine_fps_goal:
+			print("    Status: ✓ MEETS ENGINE FPS GOAL")
+		else:
+			print("    Status: ⚠ BELOW ENGINE FPS GOAL")
 
 func calculate_test_results() -> Dictionary:
 	var results = {}
@@ -489,18 +1179,18 @@ func log_results_to_console(results: Dictionary):
 		print("  ⚠ FPS Performance: BELOW TARGET (Average FPS: " + str(round(avg_fps)) + " < 55)")
 	
 	if avg_outgoing_fps >= 10:
-		print("  ✓ Outgoing FPS: HIGH (" + str(round(avg_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ✓ Outgoing FPS: HIGH (" + str(round(avg_outgoing_fps * 100) / 100) + " FPS)")
 	elif avg_outgoing_fps >= 5:
-		print("  ⚠ Outgoing FPS: MEDIUM (" + str(round(avg_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ⚠ Outgoing FPS: MEDIUM (" + str(round(avg_outgoing_fps * 100) / 100) + " FPS)")
 	else:
-		print("  ✗ Outgoing FPS: LOW (" + str(round(avg_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ✗ Outgoing FPS: LOW (" + str(round(avg_outgoing_fps * 100) / 100) + " FPS)")
 	
 	if max_outgoing_fps >= 20:
-		print("  ✓ Peak Outgoing FPS: EXCELLENT (" + str(round(max_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ✓ Peak Outgoing FPS: EXCELLENT (" + str(round(max_outgoing_fps * 100) / 100) + " FPS)")
 	elif max_outgoing_fps >= 10:
-		print("  ⚠ Peak Outgoing FPS: GOOD (" + str(round(max_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ⚠ Peak Outgoing FPS: GOOD (" + str(round(max_outgoing_fps * 100) / 100) + " FPS)")
 	else:
-		print("  ✗ Peak Outgoing FPS: POOR (" + str(round(max_outgoing_fps * 100) / 100) + " Hz)")
+		print("  ✗ Peak Outgoing FPS: POOR (" + str(round(max_outgoing_fps * 100) / 100) + " FPS)")
 	
 	print("============================================================")
 
@@ -527,8 +1217,8 @@ func log_batch_comparison_to_console(cpu_results: Dictionary, gpu_results: Dicti
 	var cpu_avg_outgoing = cpu_results.get("avg_outgoing_fps", 0)
 	var gpu_avg_outgoing = gpu_results.get("avg_outgoing_fps", 0)
 	print("\nOUTGOING FPS COMPARISON:")
-	print("  CPU Average Outgoing FPS: " + str(round(cpu_avg_outgoing * 100) / 100) + " Hz")
-	print("  GPU Average Outgoing FPS: " + str(round(gpu_avg_outgoing * 100) / 100) + " Hz")
+	print("  CPU Average Outgoing FPS: " + str(round(cpu_avg_outgoing * 100) / 100) + " FPS")
+	print("  GPU Average Outgoing FPS: " + str(round(gpu_avg_outgoing * 100) / 100) + " FPS")
 	
 	if cpu_avg_outgoing > 0 and gpu_avg_outgoing > 0:
 		var outgoing_ratio = gpu_avg_outgoing / cpu_avg_outgoing
@@ -543,7 +1233,14 @@ func reset_test():
 	is_testing = false
 	current_test_type = ""
 	is_batch_test = false
+	is_adaptive_test = false
+	current_outgoing_fps_target = 0.0
+	current_pass = 0
+	current_adaptive_mode = ""
+	adaptive_test_phases_completed = 0
 	test_results.clear()
+	adaptive_test_results.clear()
+	adaptive_test_recommendations.clear()
 	
 	# Reset UI
 	update_status("Ready")
