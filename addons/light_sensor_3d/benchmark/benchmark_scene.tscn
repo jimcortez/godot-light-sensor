@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3 uid="uid://b8x7lam2n4p5q"]
+[gd_scene load_steps=10 format=3 uid="uid://b8x7lam2n4p5q"]
 
 [ext_resource type="Script" uid="uid://c8pm5kffc7s33" path="res://addons/light_sensor_3d/benchmark/benchmark_controller.gd" id="1_controller"]
 [ext_resource type="Script" uid="uid://c0ybalyirdy0x" path="res://addons/light_sensor_3d/benchmark/color_cycling_light.gd" id="2_cycling_light"]
@@ -20,13 +20,11 @@ ambient_light_color = Color(0.1, 0.1, 0.1, 1)
 ambient_light_energy = 0.1
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
-albedo_color = Color(1, 1, 1, 1)
-metallic = 0.0
 roughness = 0.5
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_1"]
-size = Vector2(40, 40)
 material = SubResource("StandardMaterial3D_floor")
+size = Vector2(40, 40)
 
 [node name="BenchmarkScene" type="Node3D"]
 
@@ -34,27 +32,26 @@ material = SubResource("StandardMaterial3D_floor")
 environment = SubResource("Environment_1")
 
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 16, 16)
+transform = Transform3D(1, 0, 0, 0, 0.5565276, 0.8308292, 0, -0.8308292, 0.5565276, 0, 18.841494, 15.815107)
 fov = 60.0
 
 [node name="Floor" type="MeshInstance3D" parent="."]
-mesh = SubResource("PlaneMesh_1")
 layers = 2
+mesh = SubResource("PlaneMesh_1")
 
 [node name="ColorCyclingLight" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0)
 script = ExtResource("2_cycling_light")
 
 [node name="SpotLight3D" type="SpotLight3D" parent="ColorCyclingLight"]
-transform = Transform3D(1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0)
-light_energy = 1.0
+transform = Transform3D(1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, -16.143747)
+layers = 3
 shadow_enabled = true
 spot_range = 40.0
 spot_angle = 60.0
-layers = 3
 
 [node name="SensorGrid" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, -9.31259)
 script = ExtResource("3_sensor_grid")
 
 [node name="BenchmarkController" type="Node" parent="."]

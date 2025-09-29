@@ -4,6 +4,7 @@ extends Node3D
 ## Creates a grid of LightSensor3D nodes and manages their refresh cycles
 
 signal refresh_completed(refresh_time: float)
+signal refresh_cycle_started()
 
 @export var grid_size: int = 2
 @export var sensor_spacing: float = 0.2
@@ -27,10 +28,12 @@ func _ready():
 	setup_refresh_timer()
 
 func create_sensor_grid():
-	# Clear existing sensors
+	# Clear existing sensors synchronously
 	for child in get_children():
 		if child.name.begins_with("Sensor_"):
 			child.queue_free()
+	# Wait for cleanup to complete
+	await get_tree().process_frame
 	sensors.clear()
 	
 	# Create new sensor grid
@@ -54,21 +57,26 @@ func create_sensor_at_position(position: Vector3, grid_x: int, grid_z: int):
 	add_child(sensor_node)
 	
 	# Debug: Print sensor position
-	print("Sensor " + str(grid_x) + "_" + str(grid_z) + " at: " + str(position))
-	print("Sensor grid center: " + str(Vector3(0, 0.1, 0)))
+	# print("Sensor " + str(grid_x) + "_" + str(grid_z) + " at: " + str(position))
+	# print("Sensor grid center: " + str(Vector3(0, 0.1, 0)))
 	
 	# Create light sensor
 	var light_sensor = preload("res://addons/light_sensor_3d/light_sensor_3d.gd").new()
 	light_sensor.name = "LightSensor3D"
-	light_sensor.layer = 2
+	light_sensor.layer = 3  # Match the light layer
 	light_sensor.use_compute_mode = use_gpu_mode
 	light_sensor.sample_resolution = 8
+	# print("Creating sensor " + str(grid_x) + "_" + str(grid_z) + " with GPU mode: " + str(use_gpu_mode) + " on layer " + str(light_sensor.layer))
 	sensor_node.add_child(light_sensor)
 	
 	# Connect signals with sensor reference
+	# Use values_refreshed for completion tracking (always emitted) and color_updated for color changes
+	var values_connection = light_sensor.connect("values_refreshed", Callable(self, "_on_sensor_values_refreshed").bind(light_sensor))
 	var color_connection = light_sensor.connect("color_updated", Callable(self, "_on_sensor_color_updated").bind(light_sensor))
 	var light_connection = light_sensor.connect("light_level_updated", Callable(self, "_on_sensor_light_updated").bind(light_sensor))
 	
+	if values_connection != OK:
+		print("WARNING: Failed to connect values_refreshed signal for sensor " + str(grid_x) + "_" + str(grid_z))
 	if color_connection != OK:
 		print("WARNING: Failed to connect color_updated signal for sensor " + str(grid_x) + "_" + str(grid_z))
 	if light_connection != OK:
@@ -95,19 +103,10 @@ func setup_refresh_timer():
 func configure_sensors(use_gpu: bool):
 	use_gpu_mode = use_gpu
 	
-	# Update all sensors
-	for i in range(sensors.size()):
-		var sensor = sensors[i]
-		if sensor.has_method("set"):
-			sensor.set("use_compute_mode", use_gpu_mode)
-			
-			# For CPU mode, we need to ensure the sensor doesn't try to use the compute manager
-			if not use_gpu_mode:
-				# Disconnect from compute manager if connected
-				if sensor.has_meta("sensor_id"):
-					var sensor_id = sensor.get_meta("sensor_id")
-					print("Disconnecting sensor " + str(i) + " from compute manager (ID: " + str(sensor_id) + ")")
-					sensor.remove_meta("sensor_id")
+	# Recreate the sensor grid with the new mode
+	# This ensures clean initialization without dynamic mode switching issues
+	# print("Recreating sensor grid for " + ("GPU" if use_gpu_mode else "CPU") + " mode")
+	await create_sensor_grid()
 
 func start_refresh_cycle():
 	if refresh_timer:
@@ -135,6 +134,8 @@ func start_refresh_cycle_batch():
 	refresh_start_time = Time.get_unix_time_from_system()
 	individual_refresh_times.clear()
 	
+	# Emit signal that refresh cycle has started
+	emit_signal("refresh_cycle_started")
 	
 	# Start timeout timer
 	refresh_timeout_timer.start()
@@ -144,32 +145,41 @@ func start_refresh_cycle_batch():
 		var sensor = sensors[i]
 		if sensor.has_method("refresh"):
 			# Store the start time for this individual sensor
-			sensor.set_meta("refresh_start_time", Time.get_unix_time_from_system())
+			var start_time = Time.get_unix_time_from_system()
+			sensor.set_meta("refresh_start_time", start_time)
 			sensor.refresh()
 		else:
 			print("Sensor " + str(i) + " does not have refresh method")
 
-func _on_sensor_color_updated(color: Color, sensor: Node):
-	# This is called when a sensor completes its refresh
+func _on_sensor_values_refreshed(color: Color, light_level: float, sensor: Node):
+	# This is called when a sensor completes its refresh (always emitted)
 	completed_refreshes += 1
 	
-	# Calculate individual sensor refresh time
-	if sensor and sensor.has_meta("refresh_start_time"):
+	# Calculate individual sensor refresh time (only during active refresh cycles)
+	if is_refreshing and sensor and sensor.has_meta("refresh_start_time"):
 		var start_time = sensor.get_meta("refresh_start_time")
 		var end_time = Time.get_unix_time_from_system()
 		var individual_time = end_time - start_time
 		individual_refresh_times.append(individual_time)
 		sensor.remove_meta("refresh_start_time")
-	else:
-		print("WARNING: Sensor signal received but no start time found")
+	elif is_refreshing:
+		# Sensor signal received but no start time found - this can happen in GPU mode
+		# where sensors emit initial values_refreshed signals after registration
+		pass
+	# If not refreshing, this is just an initial sensor setup - ignore timing
 	
 	# Check if all sensors have completed
 	if completed_refreshes >= pending_refreshes:
 		complete_refresh_cycle()
 
+func _on_sensor_color_updated(color: Color, sensor: Node):
+	# This is called when a sensor's color actually changes
+	# We don't handle completion here anymore - use _on_sensor_values_refreshed
+	pass
+
 func _on_sensor_light_updated(light_level: float, sensor: Node):
-	# This is also called when a sensor completes its refresh
-	# We handle completion in _on_sensor_color_updated to avoid double-counting
+	# This is called when a sensor's light level actually changes
+	# We don't handle completion here anymore - use _on_sensor_values_refreshed
 	pass
 
 func _on_refresh_timeout():
@@ -196,7 +206,8 @@ func complete_refresh_cycle():
 	if individual_refresh_times.size() > 0:
 		avg_individual_time = individual_refresh_times.reduce(func(a, b): return a + b) / individual_refresh_times.size()
 	else:
-		print("WARNING: No individual refresh times recorded!")
+		# Use fallback timing if individual times aren't available
+		avg_individual_time = refresh_duration / pending_refreshes if pending_refreshes > 0 else 0.0
 	
 	# Emit signal with average individual refresh timing (more accurate)
 	emit_signal("refresh_completed", avg_individual_time)

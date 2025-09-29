@@ -55,13 +55,14 @@ func format_results(results: Dictionary) -> String:
 	text += "Min FPS: " + str(round(results.get("min_fps", 0) * 100) / 100) + "\n"
 	text += "FPS Samples: " + str(results.get("fps_samples", 0)) + "\n\n"
 	
-	# Refresh Performance
-	text += "[font_size=16][b]Refresh Performance:[/b][/font_size]\n"
-	text += "Average Refresh Time: " + str(round(results.get("avg_refresh_time", 0) * 1000) / 1000) + "s\n"
-	text += "Max Refresh Time: " + str(round(results.get("max_refresh_time", 0) * 1000) / 1000) + "s\n"
-	text += "Min Refresh Time: " + str(round(results.get("min_refresh_time", 0) * 1000) / 1000) + "s\n"
-	text += "Refresh Count: " + str(results.get("refresh_count", 0)) + "\n"
-	text += "Max Refresh Frequency: " + str(round(results.get("max_refresh_frequency", 0) * 100) / 100) + " Hz\n\n"
+	# Outgoing FPS Performance
+	text += "[font_size=16][b]Outgoing FPS:[/b][/font_size]\n"
+	text += "Average Outgoing FPS: " + str(round(results.get("avg_outgoing_fps", 0) * 100) / 100) + "\n"
+	text += "Max Outgoing FPS: " + str(round(results.get("max_outgoing_fps", 0) * 100) / 100) + "\n"
+	text += "Min Outgoing FPS: " + str(round(results.get("min_outgoing_fps", 0) * 100) / 100) + "\n"
+	text += "Outgoing FPS Samples: " + str(results.get("outgoing_fps_samples", 0)) + "\n"
+	text += "Refresh Calls: " + str(results.get("refresh_call_count", 0)) + "\n"
+	text += "Values Refreshed: " + str(results.get("values_refreshed_count", 0)) + "\n\n"
 	
 	# Test Configuration
 	text += "[font_size=16][b]Test Configuration:[/b][/font_size]\n"
@@ -81,21 +82,21 @@ func compare_results(cpu_results: Dictionary, gpu_results: Dictionary) -> String
 		var fps_ratio = gpu_avg_fps / cpu_avg_fps
 		text += "FPS Performance: GPU is " + str(round(fps_ratio * 100) / 100) + "x " + ("faster" if fps_ratio > 1 else "slower") + " than CPU\n"
 	
-	# Refresh time comparison
-	var cpu_avg_refresh = cpu_results.get("avg_refresh_time", 0)
-	var gpu_avg_refresh = gpu_results.get("avg_refresh_time", 0)
+	# Outgoing FPS comparison
+	var cpu_avg_outgoing = cpu_results.get("avg_outgoing_fps", 0)
+	var gpu_avg_outgoing = gpu_results.get("avg_outgoing_fps", 0)
 	
-	if cpu_avg_refresh > 0 and gpu_avg_refresh > 0:
-		var refresh_ratio = cpu_avg_refresh / gpu_avg_refresh
-		text += "Refresh Speed: GPU is " + str(round(refresh_ratio * 100) / 100) + "x " + ("faster" if refresh_ratio > 1 else "slower") + " than CPU\n"
+	if cpu_avg_outgoing > 0 and gpu_avg_outgoing > 0:
+		var outgoing_ratio = gpu_avg_outgoing / cpu_avg_outgoing
+		text += "Outgoing FPS: GPU is " + str(round(outgoing_ratio * 100) / 100) + "x " + ("higher" if outgoing_ratio > 1 else "lower") + " than CPU\n"
 	
-	# Refresh frequency comparison
-	var cpu_max_freq = cpu_results.get("max_refresh_frequency", 0)
-	var gpu_max_freq = gpu_results.get("max_refresh_frequency", 0)
+	# Max Outgoing FPS comparison
+	var cpu_max_outgoing = cpu_results.get("max_outgoing_fps", 0)
+	var gpu_max_outgoing = gpu_results.get("max_outgoing_fps", 0)
 	
-	if cpu_max_freq > 0 and gpu_max_freq > 0:
-		var freq_ratio = gpu_max_freq / cpu_max_freq
-		text += "Max Refresh Frequency: GPU is " + str(round(freq_ratio * 100) / 100) + "x " + ("higher" if freq_ratio > 1 else "lower") + " than CPU\n"
+	if cpu_max_outgoing > 0 and gpu_max_outgoing > 0:
+		var max_outgoing_ratio = gpu_max_outgoing / cpu_max_outgoing
+		text += "Max Outgoing FPS: GPU is " + str(round(max_outgoing_ratio * 100) / 100) + "x " + ("higher" if max_outgoing_ratio > 1 else "lower") + " than CPU\n"
 	
 	return text
 
@@ -118,33 +119,33 @@ func log_batch_comparison_to_console(cpu_results: Dictionary, gpu_results: Dicti
 		else:
 			print("  → CPU is " + str(round((1.0 / fps_ratio) * 100) / 100) + "x FASTER than GPU")
 	
-	# Refresh time comparison
-	var cpu_avg_refresh = cpu_results.get("avg_refresh_time", 0)
-	var gpu_avg_refresh = gpu_results.get("avg_refresh_time", 0)
-	print("\nREFRESH SPEED COMPARISON:")
-	print("  CPU Average Refresh Time: " + str(round(cpu_avg_refresh * 1000) / 1000) + "s")
-	print("  GPU Average Refresh Time: " + str(round(gpu_avg_refresh * 1000) / 1000) + "s")
+	# Outgoing FPS comparison
+	var cpu_avg_outgoing = cpu_results.get("avg_outgoing_fps", 0)
+	var gpu_avg_outgoing = gpu_results.get("avg_outgoing_fps", 0)
+	print("\nOUTGOING FPS COMPARISON:")
+	print("  CPU Average Outgoing FPS: " + str(round(cpu_avg_outgoing * 100) / 100) + " Hz")
+	print("  GPU Average Outgoing FPS: " + str(round(gpu_avg_outgoing * 100) / 100) + " Hz")
 	
-	if cpu_avg_refresh > 0 and gpu_avg_refresh > 0:
-		var refresh_ratio = cpu_avg_refresh / gpu_avg_refresh
-		if refresh_ratio > 1:
-			print("  → GPU is " + str(round(refresh_ratio * 100) / 100) + "x FASTER than CPU")
+	if cpu_avg_outgoing > 0 and gpu_avg_outgoing > 0:
+		var outgoing_ratio = gpu_avg_outgoing / cpu_avg_outgoing
+		if outgoing_ratio > 1:
+			print("  → GPU achieves " + str(round(outgoing_ratio * 100) / 100) + "x HIGHER outgoing FPS than CPU")
 		else:
-			print("  → CPU is " + str(round((1.0 / refresh_ratio) * 100) / 100) + "x FASTER than GPU")
+			print("  → CPU achieves " + str(round((1.0 / outgoing_ratio) * 100) / 100) + "x HIGHER outgoing FPS than GPU")
 	
-	# Refresh frequency comparison
-	var cpu_max_freq = cpu_results.get("max_refresh_frequency", 0)
-	var gpu_max_freq = gpu_results.get("max_refresh_frequency", 0)
-	print("\nREFRESH FREQUENCY COMPARISON:")
-	print("  CPU Max Refresh Frequency: " + str(round(cpu_max_freq * 100) / 100) + " Hz")
-	print("  GPU Max Refresh Frequency: " + str(round(gpu_max_freq * 100) / 100) + " Hz")
+	# Max Outgoing FPS comparison
+	var cpu_max_outgoing = cpu_results.get("max_outgoing_fps", 0)
+	var gpu_max_outgoing = gpu_results.get("max_outgoing_fps", 0)
+	print("\nMAX OUTGOING FPS COMPARISON:")
+	print("  CPU Max Outgoing FPS: " + str(round(cpu_max_outgoing * 100) / 100) + " Hz")
+	print("  GPU Max Outgoing FPS: " + str(round(gpu_max_outgoing * 100) / 100) + " Hz")
 	
-	if cpu_max_freq > 0 and gpu_max_freq > 0:
-		var freq_ratio = gpu_max_freq / cpu_max_freq
-		if freq_ratio > 1:
-			print("  → GPU achieves " + str(round(freq_ratio * 100) / 100) + "x HIGHER frequency than CPU")
+	if cpu_max_outgoing > 0 and gpu_max_outgoing > 0:
+		var max_outgoing_ratio = gpu_max_outgoing / cpu_max_outgoing
+		if max_outgoing_ratio > 1:
+			print("  → GPU achieves " + str(round(max_outgoing_ratio * 100) / 100) + "x HIGHER peak outgoing FPS than CPU")
 		else:
-			print("  → CPU achieves " + str(round((1.0 / freq_ratio) * 100) / 100) + "x HIGHER frequency than GPU")
+			print("  → CPU achieves " + str(round((1.0 / max_outgoing_ratio) * 100) / 100) + "x HIGHER peak outgoing FPS than GPU")
 	
 	# Overall assessment
 	print("\nOVERALL PERFORMANCE ASSESSMENT:")
@@ -173,15 +174,15 @@ func calculate_performance_score(results: Dictionary) -> float:
 	var fps_score = min(avg_fps / 60.0, 1.0) * 40.0
 	score += fps_score
 	
-	# Refresh frequency component (30% weight)
-	var max_freq = results.get("max_refresh_frequency", 0)
-	var freq_score = min(max_freq / 20.0, 1.0) * 30.0
-	score += freq_score
+	# Outgoing FPS component (30% weight)
+	var avg_outgoing_fps = results.get("avg_outgoing_fps", 0)
+	var outgoing_fps_score = min(avg_outgoing_fps / 20.0, 1.0) * 30.0
+	score += outgoing_fps_score
 	
-	# Refresh speed component (30% weight)
-	var avg_refresh = results.get("avg_refresh_time", 0)
-	var refresh_score = max(0, (0.5 - avg_refresh) / 0.5) * 30.0
-	score += refresh_score
+	# Max Outgoing FPS component (30% weight)
+	var max_outgoing_fps = results.get("max_outgoing_fps", 0)
+	var max_outgoing_score = min(max_outgoing_fps / 30.0, 1.0) * 30.0
+	score += max_outgoing_score
 	
 	return score
 

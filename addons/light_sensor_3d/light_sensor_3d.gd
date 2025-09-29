@@ -80,6 +80,10 @@ func _ready():
 	camera.cull_mask = layer
 	sensor_mesh.layers = layer
 	
+	# Set SubViewport size based on sample_resolution
+	_sub_viewport.size = Vector2i(sample_resolution, sample_resolution)
+	# print("LightSensor3D: Set SubViewport size to " + str(_sub_viewport.size) + " for sample_resolution " + str(sample_resolution))
+	
 	var debug_sprite := _scene.get_node("DebugViewportSprite") as Sprite3D
 	debug_sprite.visible = enable_subviewport_debug
 	
@@ -177,14 +181,16 @@ func _cpu_refresh() -> void:
 	var previous_color = color
 	var previous_light_level = light_level
 	
+	# Update the color
+	color = average_color
+	
 	# Trigger updates if the color changed
-	if not color.is_equal_approx(average_color):
-		color = average_color
+	if not color.is_equal_approx(previous_color):
 		color_updated.emit(color)
 		light_level_updated.emit(light_level)
-		
-		# Always emit refresh signal for benchmarking
-		values_refreshed.emit(color, light_level)
+	
+	# Always emit refresh signal for benchmarking (regardless of color change)
+	values_refreshed.emit(color, light_level)
 
 
 
@@ -246,6 +252,7 @@ func _check_gpu_availability_strict() -> void:
 	if _sensor_id < 0:
 		push_error("LightSensor3D: GPU compute mode enabled but sensor registration failed. sensor_id: " + str(_sensor_id))
 		return
+
 
 func _exit_tree():
 	# Clean up sensor registration when node is removed

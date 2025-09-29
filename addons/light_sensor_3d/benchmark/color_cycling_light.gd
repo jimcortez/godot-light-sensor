@@ -29,10 +29,10 @@ func _process(delta):
 	# Apply color to the light
 	spot_light.light_color = color
 	
-	# Debug: Print light info every 2 seconds
-	if int(cycle_time) % 2 == 0 and cycle_time - delta < int(cycle_time):
-		print("Light: color=" + str(color) + ", energy=" + str(spot_light.light_energy) + ", position=" + str(spot_light.global_position))
-		print("Light direction: " + str(spot_light.global_transform.basis.z) + ", angle=" + str(spot_light.spot_angle) + ", range=" + str(spot_light.spot_range))
+	# Debug: Print light info every 2 seconds (disabled to avoid interference with benchmarking)
+	# if int(cycle_time) % 2 == 0 and cycle_time - delta < int(cycle_time):
+	#	print("Light: color=" + str(color) + ", energy=" + str(spot_light.light_energy) + ", position=" + str(spot_light.global_position))
+	#	print("Light direction: " + str(spot_light.global_transform.basis.z) + ", angle=" + str(spot_light.spot_angle) + ", range=" + str(spot_light.spot_range))
 	
 
 func set_cycle_speed(speed: float):

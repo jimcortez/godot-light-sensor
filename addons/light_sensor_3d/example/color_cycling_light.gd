@@ -29,9 +29,9 @@ func _process(delta):
 	# Apply color to the light
 	spot_light.light_color = color
 	
-	# Debug: Print color changes every 2 seconds
-	if int(cycle_time) % 2 == 0 and cycle_time - delta < int(cycle_time):
-		print("Light " + str(get_name()) + " color: " + str(color) + " (hue: " + str(hue) + ")")
+	# Debug: Print color changes every 2 seconds (disabled)
+	# if int(cycle_time) % 2 == 0 and cycle_time - delta < int(cycle_time):
+	#	print("Light " + str(get_name()) + " color: " + str(color) + " (hue: " + str(hue) + ")")
 
 func set_cycle_speed(speed: float):
 	cycle_speed = speed

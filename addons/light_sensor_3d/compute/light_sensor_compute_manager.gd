@@ -25,7 +25,9 @@ class SensorState:
 	var uniform_sets: Array[RID] = []
 	var buffer_index: int = 0
 	var pending: bool = false
+	var results_read: bool = false
 	var last_result: Color = Color.BLACK
+	var texture_size: Vector2i = Vector2i(4, 4)  # Store actual texture size
 
 var _next_id: int = 1
 var _sensors: Dictionary = {} # id -> SensorState
@@ -36,10 +38,10 @@ func _ready() -> void:
 	# Add to group for easier discovery
 	add_to_group("light_sensor_compute_manager")
 	
-	print_debug("LightSensorComputeManager: Initializing... (use_gpu_compute: " + str(use_gpu_compute) + ")")
+	# print_debug("LightSensorComputeManager: Initializing... (use_gpu_compute: " + str(use_gpu_compute) + ")")
 	
 	if not use_gpu_compute:
-		print_debug("LightSensorComputeManager: GPU compute disabled by configuration.")
+		# print_debug("LightSensorComputeManager: GPU compute disabled by configuration.")
 		return
 		
 	# Use local RenderingDevice for compute operations
@@ -50,7 +52,7 @@ func _ready() -> void:
 		# Don't set use_gpu_compute = false - let the system crash when GPU compute is requested
 		return
 	
-	print_debug("LightSensorComputeManager: RenderingDevice created successfully.")
+	# print_debug("LightSensorComputeManager: RenderingDevice created successfully.")
 	_setup_compute_resources()
 
 func _setup_compute_resources() -> void:
@@ -80,7 +82,7 @@ func _setup_compute_resources() -> void:
 		push_error("LightSensorComputeManager: Failed to create compute pipeline. System will crash when GPU compute is requested.")
 		return
 	
-	print_debug("LightSensorComputeManager: GPU compute resources created successfully.")
+	# print_debug("LightSensorComputeManager: GPU compute resources created successfully.")
 
 func register_sensor(node: Node) -> int:
 	var id := _next_id
@@ -103,7 +105,7 @@ func register_sensor(node: Node) -> int:
 		push_warning("LightSensorComputeManager: Cannot create buffers - RenderingDevice is null. Sensor registration may fail.")
 	
 	_sensors[id] = state
-	print_debug("LightSensorComputeManager: Registered sensor with ID: " + str(id) + " (Total sensors: " + str(_sensors.size()) + ")")
+	# print_debug("LightSensorComputeManager: Registered sensor with ID: " + str(id) + " (Total sensors: " + str(_sensors.size()) + ")")
 	return id
 
 func unregister_sensor(id: int) -> void:
@@ -190,25 +192,28 @@ func _dispatch_compute(sensor_id: int, state: SensorState) -> void:
 		_rd.compute_list_bind_uniform_set(compute_list, state.uniform_sets[0], 0)
 		_rd.compute_list_bind_uniform_set(compute_list, state.uniform_sets[1], 1)
 	
-	# Push constants (texture size)
-	var texture_size := Vector2i(8, 8) # Default size, could be made configurable
+	# Push constants (texture size) - use actual texture size from sensor state
+	var texture_size := state.texture_size
 	var push_constant_data := PackedByteArray()
 	push_constant_data.resize(16) # 2 * int32 with 16-byte alignment
 	push_constant_data.encode_s32(0, texture_size.x)
 	push_constant_data.encode_s32(4, texture_size.y)
+	# print("LightSensorComputeManager: Setting push constants with texture size " + str(texture_size))
 	# Padding bytes 8-15 are automatically zero-filled
 	_rd.compute_list_set_push_constant(compute_list, push_constant_data, 16)
 	
 	# Dispatch compute shader (1 workgroup for 8x8 texture)
+	# print("LightSensorComputeManager: Dispatching compute shader for sensor " + str(sensor_id) + " with texture size " + str(texture_size))
 	_rd.compute_list_dispatch(compute_list, 1, 1, 1)
 	_rd.compute_list_end()
 	
 	# Submit compute list and mark as completed
 	_rd.submit()
 	_rd.sync()
+	# print("LightSensorComputeManager: Compute shader completed for sensor " + str(sensor_id))
 	# Mark as completed (no fence needed with sync)
-	state.fences[state.buffer_index] = RID() # Mark as completed
 	state.pending = false
+	state.results_read = false
 
 func _create_sensor_uniform_sets(state: SensorState) -> void:
 	# Clean up old uniform sets
@@ -284,9 +289,14 @@ func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) 
 		return RID()
 	
 	var texture_size := viewport_texture.get_size()
+	# print("LightSensorComputeManager: Creating texture for sensor " + str(sensor_id) + " with size " + str(texture_size))
 	if texture_size.x <= 0 or texture_size.y <= 0:
 		push_error("LightSensorComputeManager: Invalid texture dimensions for sensor " + str(sensor_id) + ": " + str(texture_size))
 		return RID()
+	
+	# Store the texture size in the sensor state
+	if _sensors.has(sensor_id):
+		_sensors[sensor_id].texture_size = texture_size
 	
 	# Create a new texture in the local RenderingDevice
 	var texture_format := RDTextureFormat.new()
@@ -307,6 +317,25 @@ func _create_rd_texture_from_subviewport(viewport_tex_rid: RID, sensor_id: int) 
 		# Ensure the image is in the correct format for the texture
 		viewport_texture.convert(Image.FORMAT_RGBA8)
 		var image_data := viewport_texture.get_data()
+		
+		# Debug: Check if the texture has any non-zero data (disabled)
+		# var has_non_zero_data := false
+		# for i in range(min(16, image_data.size())):  # Check first 16 bytes
+		#	if image_data.decode_u8(i) > 0:
+		#		has_non_zero_data = true
+		#		break
+		# 
+		# print("LightSensorComputeManager: Texture data for sensor " + str(sensor_id) + " - has_non_zero: " + str(has_non_zero_data))
+		# if has_non_zero_data:
+		#	# Print first few pixel values
+		#	var pixel_count = min(4, texture_size.x * texture_size.y)
+		#	for i in range(pixel_count):
+		#		var pixel_offset = i * 4
+		#		if pixel_offset + 3 < image_data.size():
+		#			var r = image_data.decode_u8(pixel_offset)
+		#			var g = image_data.decode_u8(pixel_offset + 1)
+		#			var b = image_data.decode_u8(pixel_offset + 2)
+		#			print("  Pixel " + str(i) + ": (" + str(r) + ", " + str(g) + ", " + str(b) + ")")
 		
 		# Calculate expected data size
 		var expected_size := texture_size.x * texture_size.y * 4  # RGBA8 = 4 bytes per pixel
@@ -329,10 +358,11 @@ func _poll_completed_results() -> void:
 	
 	for sensor_id in _sensors.keys():
 		var state: SensorState = _sensors[sensor_id]
-		# With sync approach, results are immediately available
-		if state.fences[state.buffer_index] == RID() and not state.pending:
+		# With sync approach, results are immediately available when not pending
+		# Check if we have a completed result that hasn't been read yet
+		if not state.pending and not state.results_read:
 			_read_sensor_result(sensor_id, state)
-			state.fences[state.buffer_index] = RID() # Clear completed flag
+			state.results_read = true
 
 func _read_sensor_result(sensor_id: int, state: SensorState) -> void:
 	# Map the output buffer and read the result
@@ -346,7 +376,11 @@ func _read_sensor_result(sensor_id: int, state: SensorState) -> void:
 		var result_color := Color(r, g, b)
 		
 		state.last_result = result_color
+		# print("LightSensorComputeManager: Emitting sensor_result_ready for sensor " + str(sensor_id) + " with color " + str(result_color) + " (raw: " + str(r) + ", " + str(g) + ", " + str(b) + ")")
 		emit_signal("sensor_result_ready", sensor_id, result_color)
+	else:
+		# Invalid buffer data size - silently ignore
+		pass
 	
 	# Switch to other buffer for next dispatch
 	state.buffer_index = (state.buffer_index + 1) % 2
